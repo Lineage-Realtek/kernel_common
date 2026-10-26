@@ -406,9 +406,181 @@ static int rtk_usb3_parameter_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(rtk_usb3_parameter);
 
+static int __get_parameter_at_page(struct seq_file *s, struct rtk_phy *rtk_phy,
+				   struct phy_data *phy_data_array, const char *phy_addr)
+{
+	struct phy_data *phy_data;
+	u32 addr;
+	int i, ret;
+
+	ret = kstrtouint(phy_addr, 16, &addr);
+	if (ret < 0) {
+		pr_err("%s::kstrtouint() failed\n", __func__);
+		return -EINVAL;
+	}
+
+	i = PHY_ADDR_MAP_ARRAY_INDEX(addr);
+	phy_data = (phy_data_array + i);
+
+	if (phy_data->addr && phy_data->data)
+		seq_printf(s, "Now Parameter addr 0x%02x = 0x%04x\n",
+			   phy_data->addr, phy_data->data);
+	else
+		seq_printf(s, "Now Parameter addr 0x%02x is default\n",
+			   addr);
+
+	return 0;
+}
+
+static int __set_parameter_at_page(struct rtk_phy *rtk_phy, struct phy_reg *phy_reg,
+				   struct phy_parameter *phy_parameter,
+				   struct phy_data *phy_data_array,
+				   const char *phy_addr, const char *phy_value)
+{
+	struct phy_data *phy_data;
+	u32 addr, value;
+	int i, ret;
+
+	ret = kstrtouint(phy_addr, 16, &addr);
+	if (ret < 0) {
+		pr_err("%s::kstrtouint() failed\n", __func__);
+		return -EINVAL;
+	}
+	ret = kstrtouint(phy_value, 16, &value);
+	if (ret < 0) {
+		pr_err("%s::kstrtouint() failed\n", __func__);
+		return -EINVAL;
+	}
+
+	i = PHY_ADDR_MAP_ARRAY_INDEX(addr);
+	phy_data = (phy_data_array + i);
+
+	phy_data->addr = addr;
+	phy_data->data = value;
+
+	if (rtk_phy_write(phy_reg, addr, value))
+		dev_err(rtk_phy->dev,
+			"[%s:%d] Error: addr=0x%02x value=0x%04x\n",
+			__func__, __LINE__, addr, value);
+
+	return 0;
+}
+
+static int rtk_usb3_set_parameter_show(struct seq_file *s, void *unused)
+{
+	const struct file *file = s->file;
+	const char *file_name = file_dentry(file)->d_iname;
+	struct dentry *p_dentry = file_dentry(file)->d_parent;
+	const char *phy_dir_name = p_dentry->d_iname;
+	struct rtk_phy *rtk_phy = s->private;
+	struct phy_cfg *phy_cfg;
+	struct phy_parameter *phy_parameter = NULL;
+	int ret, index;
+
+	for (index = 0; index < rtk_phy->num_phy; index++) {
+		size_t sz = 30;
+		char name[30] = {0};
+
+		snprintf(name, sz, "phy%d", index);
+		if (strncmp(name, phy_dir_name, strlen(name)) == 0) {
+			phy_parameter = &((struct phy_parameter *)rtk_phy->phy_parameter)[index];
+			break;
+		}
+	}
+	if (!phy_parameter)
+		return -EINVAL;
+
+	phy_cfg = rtk_phy->phy_cfg;
+
+	ret = __get_parameter_at_page(s, rtk_phy, phy_cfg->param, file_name);
+	if (ret < 0)
+		return ret;
+
+	seq_puts(s, "Set phy parameter by following command\n");
+	seq_printf(s, "echo \"value\" > %s/%s\n",
+		   phy_dir_name, file_name);
+
+	return 0;
+}
+
+static int rtk_usb3_set_parameter_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, rtk_usb3_set_parameter_show, inode->i_private);
+}
+
+static ssize_t rtk_usb3_set_parameter_write(struct file *file,
+					    const char __user *ubuf, size_t count, loff_t *ppos)
+{
+	const char *file_name = file_dentry(file)->d_iname;
+	struct dentry *p_dentry = file_dentry(file)->d_parent;
+	const char *phy_dir_name = p_dentry->d_iname;
+	struct seq_file *s = file->private_data;
+	struct rtk_phy *rtk_phy = s->private;
+	struct phy_cfg *phy_cfg;
+	struct phy_reg *phy_reg;
+	struct phy_parameter *phy_parameter = NULL;
+	int ret = 0;
+	char buffer[40] = {0};
+	int index;
+
+	if (copy_from_user(&buffer, ubuf, min_t(size_t, sizeof(buffer) - 1, count)))
+		return -EFAULT;
+
+	for (index = 0; index < rtk_phy->num_phy; index++) {
+		size_t sz = 30;
+		char name[30] = {0};
+
+		snprintf(name, sz, "phy%d", index);
+		if (strncmp(name, phy_dir_name, strlen(name)) == 0) {
+			phy_parameter = &((struct phy_parameter *)rtk_phy->phy_parameter)[index];
+			break;
+		}
+	}
+
+	if (!phy_parameter)
+		return -EINVAL;
+
+	phy_cfg = rtk_phy->phy_cfg;
+	phy_reg = &phy_parameter->phy_reg;
+
+	ret = __set_parameter_at_page(rtk_phy, phy_reg, phy_parameter,
+				      phy_cfg->param, file_name, buffer);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static const struct file_operations rtk_usb3_set_parameter_fops = {
+	.open			= rtk_usb3_set_parameter_open,
+	.write			= rtk_usb3_set_parameter_write,
+	.read			= seq_read,
+	.llseek			= seq_lseek,
+	.release		= single_release,
+};
+
+static int create_debug_set_parameter_files(struct rtk_phy *rtk_phy,
+					    struct dentry *phy_dir, size_t addr_size)
+{
+	int i;
+
+	for (i = 0; i < addr_size; i++) {
+		size_t sz = 30;
+		char name[30] = {0};
+
+		snprintf(name, sz, "%02x", ARRAY_INDEX_MAP_PHY_ADDR(i));
+
+		debugfs_create_file(name, 0644, phy_dir, rtk_phy,
+				    &rtk_usb3_set_parameter_fops);
+	}
+
+	return 0;
+}
+
 static inline void create_debug_files(struct rtk_phy *rtk_phy)
 {
 	struct dentry *phy_debug_root = NULL;
+	struct dentry *set_parameter_dir = NULL;
 
 	phy_debug_root = create_phy_debug_root();
 
@@ -422,6 +594,31 @@ static inline void create_debug_files(struct rtk_phy *rtk_phy)
 	if (!debugfs_create_file("parameter", 0444, rtk_phy->debug_dir, rtk_phy,
 				 &rtk_usb3_parameter_fops))
 		goto file_error;
+
+	set_parameter_dir = debugfs_create_dir("set_parameter", rtk_phy->debug_dir);
+	if (set_parameter_dir) {
+		struct phy_cfg *phy_cfg;
+		int index, ret;
+
+		phy_cfg = rtk_phy->phy_cfg;
+
+		for (index = 0; index < rtk_phy->num_phy; index++) {
+			struct dentry *phy_dir;
+			size_t sz = 30;
+			char name[30] = {0};
+
+			snprintf(name, sz, "phy%d", index);
+
+			phy_dir = debugfs_create_dir(name, set_parameter_dir);
+			if (!phy_dir)
+				goto file_error;
+
+			ret = create_debug_set_parameter_files(rtk_phy, phy_dir,
+							       phy_cfg->param_size);
+			if (ret < 0)
+				goto file_error;
+		}
+	}
 
 	return;
 
@@ -531,9 +728,17 @@ static void update_amplitude_control_value(struct rtk_phy *rtk_phy,
 static int parse_phy_data(struct rtk_phy *rtk_phy)
 {
 	struct device *dev = rtk_phy->dev;
+	struct device_node *np = dev->of_node;
 	struct phy_parameter *phy_parameter;
 	int ret = 0;
 	int index;
+	int na, ns, num_regs;
+
+	na = of_n_addr_cells(np);
+	ns = of_n_size_cells(np);
+	num_regs = of_property_count_elems_of_size(np, "reg", (na + ns) * 4);
+
+	rtk_phy->num_phy = num_regs;
 
 	rtk_phy->phy_parameter = devm_kzalloc(dev, sizeof(struct phy_parameter) *
 					      rtk_phy->num_phy, GFP_KERNEL);
@@ -543,7 +748,7 @@ static int parse_phy_data(struct rtk_phy *rtk_phy)
 	for (index = 0; index < rtk_phy->num_phy; index++) {
 		phy_parameter = &((struct phy_parameter *)rtk_phy->phy_parameter)[index];
 
-		phy_parameter->phy_reg.reg_mdio_ctl = of_iomap(dev->of_node, 0) + index;
+		phy_parameter->phy_reg.reg_mdio_ctl = of_iomap(dev->of_node, index);
 
 		/* Amplitude control address 0x20 bit 0 to bit 7 */
 		if (of_property_read_u32(dev->of_node, "realtek,amplitude-control-coarse-tuning",
@@ -591,8 +796,6 @@ static int rtk_usb3phy_probe(struct platform_device *pdev)
 
 	memcpy(rtk_phy->phy_cfg, phy_cfg, sizeof(*phy_cfg));
 
-	rtk_phy->num_phy = 1;
-
 	ret = parse_phy_data(rtk_phy);
 	if (ret)
 		goto err;
@@ -622,6 +825,15 @@ err:
 static void rtk_usb3phy_remove(struct platform_device *pdev)
 {
 	struct rtk_phy *rtk_phy = platform_get_drvdata(pdev);
+	int index;
+
+	for (index = 0; index < rtk_phy->num_phy; index++) {
+		struct phy_parameter *phy_parameter;
+
+		phy_parameter = &((struct phy_parameter *)rtk_phy->phy_parameter)[index];
+
+		iounmap(phy_parameter->phy_reg.reg_mdio_ctl);
+	}
 
 	remove_debug_files(rtk_phy);
 
