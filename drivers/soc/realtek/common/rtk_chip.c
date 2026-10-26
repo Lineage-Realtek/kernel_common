@@ -59,11 +59,6 @@ static int of_get_bond_id(struct device_node *np, u32 *bond)
 	return of_rtd_soc_read_efuse(np, "bond_id", (u8 *)bond, sizeof(*bond));
 }
 
-static int of_get_chip_revision(struct device_node *np, u32 *revision)
-{
-	return of_rtd_soc_read_efuse(np, "chip_revision", (u8 *)revision, sizeof(*revision));
-}
-
 static int of_get_mob_remark(struct device_node *np, u32 *bond)
 {
 	return of_rtd_soc_read_efuse(np, "mob_remark", (u8 *)bond, sizeof(*bond));
@@ -145,7 +140,6 @@ static const struct rtd_soc_revision rtd1325_revisions[] = {
 
 static const struct rtd_soc_revision rtd1625_revisions[] = {
 	{ "A00", 0x00000000},
-	{ "B00", 0x00010000},
 	{ }
 };
 
@@ -504,168 +498,9 @@ static const char *rtd1325_name(struct device *dev, const struct rtd_soc *s)
 	return "RTD1325";
 }
 
-static const char *rtd1325_chip_type(struct device *dev, const struct rtd_soc *s)
-{
-	u32 bond_id;
-	int ret;
-
-#define CHIP_TYPE_1325_EI (0x00000000)
-#define CHIP_TYPE_1325_ES (0x000B0001)
-#define CHIP_TYPE_1325_PB (0x098B0003)
-#define CHIP_TYPE_1325_PC (0x090B0003)
-#define CHIP_TYPE_1325_PV (0x010B0003)
-#define CHIP_TYPE_1332_EI (0x000C0000)
-#define CHIP_TYPE_1332_ES (0x000F0001)
-#define CHIP_TYPE_1332_PB (0x098F0003)
-#define CHIP_TYPE_1332_PC (0x090F0003)
-#define CHIP_TYPE_1332_PV (0x010F0003)
-
-	ret = of_get_bond_id(dev->of_node, &bond_id);
-	if (!ret) {
-		dev_info(dev, "bond_id: 0x%08x\n", bond_id);
-		switch (bond_id) {
-		case (CHIP_TYPE_1325_EI):
-			return "1325_EI";
-		case (CHIP_TYPE_1325_ES):
-			return "1325_ES";
-		case (CHIP_TYPE_1325_PB):
-			return "1325T_PB";
-		case (CHIP_TYPE_1325_PC):
-			return "1325T_PC";
-		case (CHIP_TYPE_1325_PV):
-			return "1325T_PV";
-		case (CHIP_TYPE_1332_EI):
-			return "1332_EI";
-		case (CHIP_TYPE_1332_ES):
-			return "1332_ES";
-		case (CHIP_TYPE_1332_PB):
-			return "1332T_PB";
-		case (CHIP_TYPE_1332_PC):
-			return "1332T_PC";
-		case (CHIP_TYPE_1332_PV):
-			return "1332T_PV";
-		default:
-			pr_err("%s: Not define chip type 0x%x\n",
-				    __func__, bond_id);
-		}
-	}
-
-	return "unknown";
-}
-
 static const char *rtd1625_name(struct device *dev, const struct rtd_soc *s)
 {
-	u32 bond_id;
-	int ret;
-
-#define RTD1625_PKG_MASK  0xC0000000
-#define RTD1625_PKG_BIG   0x80000000
-#define RTD1625_PKG_SMALL 0x00000000
-#define RTD1625_USE_ON_AIOT    0x000000F0
-
-	ret = of_get_bond_id(dev->of_node, &bond_id);
-	if (ret) {
-		/* read bond_id from otp directly*/
-		void __iomem *reg = ioremap(0x980323c8, 0x4);
-
-		ret = 0;
-
-		bond_id = readl(reg);
-		iounmap(reg);
-	}
-
-	if (!ret) {
-		u32 package_type;
-		bool is_aiot;
-
-		dev_info(dev, "bond_id: 0x%08x\n", bond_id);
-
-		package_type = bond_id & RTD1625_PKG_MASK;
-
-		/* Note disabling all bits used by chrome,
-		   then this chip is used by aiot
-		 */
-		is_aiot = ((bond_id & RTD1625_USE_ON_AIOT) == RTD1625_USE_ON_AIOT);
-
-		switch (package_type) {
-		case (RTD1625_PKG_BIG):
-			if (is_aiot)
-				return "RTD1501B";
-			else
-				return "RTD1861B";
-			break;
-		case (RTD1625_PKG_SMALL):
-			if (is_aiot)
-				return "RTD1501S";
-			else
-				return "RTD1920S";
-			break;
-		default:
-			pr_err("%s: Using default chip id (bond_id=0x%x)\n",
-				    __func__, bond_id);
-		}
-	}
-
 	return "RTD1625";
-}
-
-static const char *rtd1625_chip_type(struct device *dev, const struct rtd_soc *s)
-{
-	u32 bond_id;
-	int ret;
-
-#define CHIP_TYPE_1625_EI  (0x0C000000)
-#define CHIP_TYPE_1625_ES  (0x3C000001)
-#define CHIP_TYPE_1861B_EI (0x80040000)
-#define CHIP_TYPE_1861B_ES (0xB0040001)
-#define CHIP_TYPE_1501B_EI (0x800400F0)
-#define CHIP_TYPE_1501B_ES (0xB00400F1)
-#define CHIP_TYPE_1920S_EI (0x0C000000)
-#define CHIP_TYPE_1920S_ES (0x0C000001)
-#define CHIP_TYPE_1501S_EI (0x3C0000F0)
-#define CHIP_TYPE_1501S_ES (0x3C0000F1)
-
-	ret = of_get_bond_id(dev->of_node, &bond_id);
-	if (ret) {
-		/* read bond_id from otp directly*/
-		void __iomem *reg = ioremap(0x980323c8, 0x4);
-
-		ret = 0;
-
-		bond_id = readl(reg);
-		iounmap(reg);
-	}
-
-	if (!ret) {
-		dev_info(dev, "bond_id: 0x%08x\n", bond_id);
-		switch (bond_id) {
-		//case (CHIP_TYPE_1625_EI):
-		//	return "1625_EI";
-		//case (CHIP_TYPE_1625_ES):
-		//	return "1625_ES";
-		case (CHIP_TYPE_1861B_EI):
-			return "1861B_EI";
-		case (CHIP_TYPE_1861B_ES):
-			return "1861B_ES";
-		case (CHIP_TYPE_1501B_EI):
-			return "1501B_EI";
-		case (CHIP_TYPE_1501B_ES):
-			return "1501B_ES";
-		case (CHIP_TYPE_1920S_EI):
-			return "1920S_EI";
-		case (CHIP_TYPE_1920S_ES):
-			return "1920S_ES";
-		case (CHIP_TYPE_1501S_EI):
-			return "1501S_EI";
-		case (CHIP_TYPE_1501S_ES):
-			return "1501S_ES";
-		default:
-			pr_err("%s: Not define chip type 0x%x\n",
-				    __func__, bond_id);
-		}
-	}
-
-	return "unknown";
 }
 
 static const char *rtd119x_get_codename(struct device *dev)
@@ -743,8 +578,8 @@ static const struct rtd_soc rtd_soc_families[] = {
 	{ 0x00006820, rtd1312c_name, NULL, rtd1312c_revisions, rtd1312c_get_codename },
 	{ 0x00006756, rtd1319d_name, rtd1319d_chip_type, rtd1319d_revisions, rtd1319d_get_codename },
 	{ 0x00006885, rtd13xx_name, NULL, rtd1315e_revisions, rtd13xx_get_codename },
-	{ 0x00086885, rtd1325_name, rtd1325_chip_type, rtd1325_revisions, rtd1325_get_codename },
-	{ 0x00006991, rtd1625_name, rtd1625_chip_type, rtd1625_revisions, rtd1625_get_codename },
+	{ 0x00086885, rtd1325_name, NULL, rtd1325_revisions, rtd1325_get_codename },
+	{ 0x00006991, rtd1625_name, NULL, rtd1625_revisions, rtd1625_get_codename },
 };
 
 static const struct rtd_soc *rtd_soc_by_chip_id(u32 chip_id, u32 chip_rev)
@@ -758,30 +593,6 @@ static const struct rtd_soc *rtd_soc_by_chip_id(u32 chip_id, u32 chip_rev)
 			return family;
 	}
 	return NULL;
-}
-
-static const char *rtd_soc_otp_rev(struct device *dev, const char *revision)
-{
-	u32 otp_chip_rev = 0;
-	int ret;
-
-#define OTP_CHIP_REV_A00 0x0
-#define OTP_CHIP_REV_A01 0x1
-
-	if (!strncmp(revision, "A00", strlen("A00"))) {
-		ret = of_get_chip_revision(dev->of_node, &otp_chip_rev);
-		if (!ret) {
-			dev_info(dev, "otp_chip_rev: 0x%08x\n", otp_chip_rev);
-			switch (otp_chip_rev) {
-			case OTP_CHIP_REV_A01:
-				return "A01";
-			default:
-				return revision;
-			}
-		}
-	}
-
-	return revision;
 }
 
 static const char *rtd_soc_rev(const struct rtd_soc *family, u32 chip_rev)
@@ -904,7 +715,6 @@ static int rtd_soc_probe(struct platform_device *pdev)
 		s->get_codename(&pdev->dev) : "Digital Home Center");
 
 	soc_dev_attr->revision = rtd_soc_rev(s, chip_rev);
-	soc_dev_attr->revision = rtd_soc_otp_rev(&pdev->dev, soc_dev_attr->revision);
 
 	custom_dev_attr = kzalloc(sizeof(*custom_dev_attr), GFP_KERNEL);
 	if (!custom_dev_attr) {
