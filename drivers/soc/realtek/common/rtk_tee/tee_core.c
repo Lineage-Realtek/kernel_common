@@ -42,6 +42,7 @@ static DEFINE_SPINLOCK(driver_lock);
 
 static struct class *tee_class;
 static dev_t tee_devt;
+static u64 dma_mask;//for DMA operation
 
 struct tee_context *teedev_open(struct tee_device *teedev)
 {
@@ -966,6 +967,9 @@ struct tee_device *tee_device_alloc(const struct tee_desc *teedesc,
 	teedev->dev.class = tee_class;
 	teedev->dev.release = tee_release_device;
 	teedev->dev.parent = dev;
+	//for DMA operation
+	dma_mask = 0xffffffff;
+	teedev->dev.dma_mask = &dma_mask;
 
 	teedev->dev.devt = MKDEV(MAJOR(tee_devt), teedev->id);
 

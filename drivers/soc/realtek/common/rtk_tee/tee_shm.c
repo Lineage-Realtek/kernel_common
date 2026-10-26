@@ -298,7 +298,7 @@ struct tee_shm *tee_shm_register_fd(struct tee_context *ctx, int fd)
 	ref->shm.id = -1;
 
 	ref->dmabuf = dma_buf_get(fd);
-	if (!ref->dmabuf) {
+	if (IS_ERR_OR_NULL(ref->dmabuf)) {
 		rc = ERR_PTR(-EINVAL);
 		goto err;
 	}
@@ -342,12 +342,12 @@ err:
 			idr_remove(&ctx->teedev->idr, ref->shm.id);
 			mutex_unlock(&ctx->teedev->mutex);
 		}
-		if (ref->sgt)
+		if (!IS_ERR_OR_NULL(ref->sgt))
 			dma_buf_unmap_attachment(ref->attach, ref->sgt,
 						 DMA_BIDIRECTIONAL);
-		if (ref->attach)
+		if (!IS_ERR_OR_NULL(ref->attach))
 			dma_buf_detach(ref->dmabuf, ref->attach);
-		if (ref->dmabuf)
+		if (!IS_ERR_OR_NULL(ref->dmabuf))
 			dma_buf_put(ref->dmabuf);
 	}
 	kfree(ref);
