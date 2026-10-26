@@ -375,6 +375,8 @@ config IR_RX51
 
 source "drivers/media/rc/img-ir/Kconfig"
 
+source "drivers/media/rc/rtk-ir/Kconfig"
+
 config RC_LOOPBACK
 	tristate "Remote Control Loopback Driver"
 	help
