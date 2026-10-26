@@ -28,10 +28,6 @@ static inline u64 cqhci_crypto_prep_task_desc(struct mmc_request *mrq)
 	/* We set max_dun_bytes_supported=4, so all DUNs should be 32-bit. */
 	WARN_ON_ONCE(mrq->crypto_ctx->bc_dun[0] > U32_MAX);
 
-#if IS_ENABLED(CONFIG_MMC_DW_CQE_RTK)
-        return (CQHCI_CRYPTO_ENABLE_BIT |
-                CQHCI_CRYPTO_KEYSLOT(mrq->crypto_key_slot)) + mrq->data->blk_addr;
-#endif
 	return CQHCI_CRYPTO_ENABLE_BIT |
 	       CQHCI_CRYPTO_KEYSLOT(mrq->crypto_key_slot) |
 	       mrq->crypto_ctx->bc_dun[0];
