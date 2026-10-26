@@ -16,6 +16,7 @@
 #include <linux/pm.h>
 
 #include <asm/io.h>
+#include <trace/hooks/gic_v3.h>
 
 #define GICD_ISENABLER0 0x100
 #define GICD_ISENABLER1 0x104
@@ -30,6 +31,7 @@
 #define REDISTRIBUTOR_BASE 0xff140000
 #define DISTRIBUTOR_SIZE 0x10000
 #define REDISTRIBUTOR_SIZE 0x80000
+#define GICD_IROUTER_SPI_MODE_ANY (1U << 31)
 
 static unsigned int gicr_isenabler0;
 static unsigned int gicd_isenabler0;
@@ -102,6 +104,14 @@ static int rtk_gic_off_cpu(unsigned int cpu)
 	return 0;
 }
 
+static void rtk_gic_set_affinity(void *unused, struct irq_data *d,
+				 const struct cpumask *mask_val, u64 *affinity,
+				 bool force, void __iomem *base,
+				 void __iomem *rbase, u64 redist_stride)
+{
+	*affinity |= GICD_IROUTER_SPI_MODE_ANY;
+}
+
 static int rtk_gic_probe(struct platform_device *pdev)
 {
 	dbase = ioremap(DISTRIBUTOR_BASE, DISTRIBUTOR_SIZE);
@@ -114,6 +124,8 @@ static int rtk_gic_probe(struct platform_device *pdev)
 				  "rtk:gic:extension:starting",
 				  rtk_gic_on_cpu, rtk_gic_off_cpu);
 	cpu_pm_register_notifier(&rtk_gic_pm_notifier_block);
+
+	register_trace_android_rvh_gic_v3_set_affinity(rtk_gic_set_affinity, NULL);
 
 	return 0;
 };
