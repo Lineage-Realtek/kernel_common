@@ -34,8 +34,6 @@
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 
-#include <soc/realtek/rtk_pm.h>
-
 #define ISO_USB_CTRL_REG 0xfb0 /* 0x98007fb0 */
 #define ISO_USB_U2PHY_REG_LDO_PW (BIT(20) | BIT(21) | BIT(22) | BIT(23))
 #define ISO_USB0_MAC_POWER (BIT(0))
@@ -75,9 +73,6 @@
 #define WRAP_USB3_TC_MODE BIT(0)
 #define WRAP_USB3_CC_DET BIT(1)
 #define WRAP_USB3_CC_SWITCH_INV BIT(2)
-
-#define USB_RST_REG 0x98007088
-#define USB_RST_MASK (BIT(28)| BIT(27) | BIT(7))
 
 struct gpio_data {
 	struct gpio_desc *gpio_desc;
@@ -128,9 +123,7 @@ struct port_data {
 	struct delayed_work auto_role_swap_work;
 #define DEFAULT_AUTO_ROLE_SWAP_TIME 30
 	int auto_role_swap_time;
-	bool auto_role_swap_running;
 	int is_linked_on_host_mode;
-	bool is_only_data_role_swap;
 
 	/* active for port power */
 	int active;
@@ -153,7 +146,7 @@ struct port_data {
 struct manager_data {
 	struct device *dev;
 
-#define MAX_USB_PORT_NUM 5
+#define MAX_USB_PORT_NUM 4
 	struct port_data port[MAX_USB_PORT_NUM];
 
 	/* usb power gpio */
@@ -219,12 +212,10 @@ static int __isolate_phy_from_a_to_d(struct manager_data *data)
 
 #define WRAP_REG_USB2_PHY_UTMI_LEGACY 0x8
 	i = 3;
-	if (data->port[i].port_num >= 0) {
-		wrap_base = of_iomap(data->port[i].port_node, 0);
-		reg = wrap_base + WRAP_REG_USB2_PHY_UTMI_LEGACY;
-		writel(WRAP_RESET_UTMI_P0 | readl(reg), reg);
-		iounmap(wrap_base);
-	}
+	wrap_base = of_iomap(data->port[i].port_node, 0);
+	reg = wrap_base + WRAP_REG_USB2_PHY_UTMI_LEGACY;
+	writel(WRAP_RESET_UTMI_P0 | readl(reg), reg);
+	iounmap(wrap_base);
 
 	regmap_update_bits(data->iso_regs, ISO_USB_CTRL_REG,
 			   0,
@@ -432,12 +423,12 @@ static int usb_port_reset_assert(struct port_data *port)
 	for (i = 0; i < MAX_CLK_RESET_NUM; i++)
 		usb_reset_assert(port->reset_mac[i]);
 
-	usb_reset_assert(port->type_c.reset_type_c);
+	usb_reset_deassert(port->type_c.reset_type_c); /* NOTE: deassert, as in the device build */
 
 	return 0;
 }
 
-static int usb_port_phy_reset_deassert(struct port_data *port, bool check)
+static int usb_port_phy_reset_deassert(struct port_data *port)
 {
 	int i;
 
@@ -445,8 +436,6 @@ static int usb_port_phy_reset_deassert(struct port_data *port, bool check)
 		usb_reset_deassert(port->reset_u2phy[i]);
 
 	if (port->support_usb3) {
-		if (check && port->port_num == 4)
-			return 0;
 		for (i = 0; i < MAX_CLK_RESET_NUM; i++)
 			usb_reset_deassert(port->reset_u3phy[i]);
 	}
@@ -454,7 +443,7 @@ static int usb_port_phy_reset_deassert(struct port_data *port, bool check)
 	return 0;
 }
 
-static int usb_port_phy_reset_assert(struct port_data *port, bool check)
+static int usb_port_phy_reset_assert(struct port_data *port)
 {
 	int i;
 
@@ -462,8 +451,6 @@ static int usb_port_phy_reset_assert(struct port_data *port, bool check)
 		usb_reset_assert(port->reset_u2phy[i]);
 
 	if (port->support_usb3) {
-		if (check && port->port_num == 4)
-                        return 0;
 		for (i = 0; i < MAX_CLK_RESET_NUM; i++)
 			usb_reset_assert(port->reset_u3phy[i]);
 	}
@@ -529,20 +516,12 @@ static int rtk_usb_init_clock_reset(struct manager_data *data)
 {
 	struct device *dev = data->dev;
 	struct reset_control *reset_usb_apply = usb_reset_get(dev->of_node, "apply");
-	void __iomem *base;
 	int i;
-	bool check;
 
 	dev_dbg(dev, "Realtek USB init\n");
 
-	base = ioremap(USB_RST_REG, 0x4);
-	if ((readl(base) & USB_RST_MASK) == 0x18000080)
-		check = 1;
-	else
-		check = 0;
-
 	for (i = 0; i < MAX_USB_PORT_NUM; i++)
-		usb_port_phy_reset_assert(&data->port[i], check);
+		usb_port_phy_reset_assert(&data->port[i]);
 	for (i = 0; i < MAX_USB_PORT_NUM; i++)
 		usb_port_reset_assert(&data->port[i]);
 	usb_reset_assert(data->reset_usb);
@@ -554,7 +533,7 @@ static int rtk_usb_init_clock_reset(struct manager_data *data)
 
 	for (i = 0; i < MAX_USB_PORT_NUM; i++) {
 		if (port_can_enable(&data->port[i]))
-			usb_port_phy_reset_deassert(&data->port[i], check);
+			usb_port_phy_reset_deassert(&data->port[i]);
 	}
 
 	usb_reset_deassert(reset_usb_apply);
@@ -593,7 +572,6 @@ static int rtk_usb_init_clock_reset(struct manager_data *data)
 
 	usb_reset_put(reset_usb_apply);
 
-	iounmap(base);
 	return 0;
 }
 
@@ -606,7 +584,7 @@ static int rtk_usb_clear_clock_reset(struct manager_data *data)
 	dev_dbg(dev, "Realtek USB clear clock and reset\n");
 
 	for (i = 0; i < MAX_USB_PORT_NUM; i++)
-		usb_port_phy_reset_assert(&data->port[i], 0);
+		usb_port_phy_reset_assert(&data->port[i]);
 	for (i = 0; i < MAX_USB_PORT_NUM; i++)
 		usb_port_reset_assert(&data->port[i]);
 	usb_reset_assert(data->reset_usb);
@@ -638,7 +616,7 @@ static int __usb_port_clock_reset_enable(struct manager_data *data,
 
 	/* Enable USB port reset */
 	if (port_can_enable(port))
-		usb_port_phy_reset_deassert(port, 0);
+		usb_port_phy_reset_deassert(port);
 
 	/* wait hardware clock stable */
 	udelay(300);
@@ -668,7 +646,7 @@ static int __usb_port_clock_reset_disable(struct manager_data *data,
 	/* Do wmb */
 	wmb();
 
-	usb_port_phy_reset_assert(port, 0);
+	usb_port_phy_reset_assert(port);
 
 	/* wait hardware clock stable */
 	udelay(300);
@@ -1218,9 +1196,6 @@ static int __usb_port_host_add_remove_notify(struct manager_data *data,
 	if (on && port->type_c.is_enable && !port->type_c.is_attach)
 		run_power_on_off = false;
 
-	if (port->is_only_data_role_swap)
-		run_power_on_off = false;
-
 	if (run_power_on_off)
 		__usb_port_power_on_off(data->dev, port, on, usb_node);
 
@@ -1671,10 +1646,8 @@ static int __usb_unbind_driver(struct manager_data *data,
 	dev_info(data->dev, "%s: To unbind usb port%d\n",
 		    __func__, port->port_num);
 
-	if (port->type_c.node && port->type_c.is_enable) {
-		port->role_sw = NULL;
+	if (port->type_c.node && port->type_c.is_enable)
 		__do_usb_unbind_driver(data, port->type_c.node);
-	}
 	__do_usb_unbind_driver(data, port->port_node);
 	__do_usb_unbind_driver(data, port->slave_mac_node);
 
@@ -1738,11 +1711,8 @@ static ssize_t enable_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(enable);
 
-static bool __check_udc_configured(struct manager_data *data, struct device_node *usb_node);
-
 static void run_auto_role_swap(struct manager_data *data,
-				  struct port_data *port, int _timeout,
-				  enum usb_role try_role, bool force_swap)
+				  struct port_data *port, int _timeout)
 {
 	struct device *dev = data->dev;
 	struct device_node *usb_node;
@@ -1758,39 +1728,11 @@ static void run_auto_role_swap(struct manager_data *data,
 	if (!role_sw)
 		return;
 
-	if (port->auto_role_swap_running) {
-		dev_info(dev, "port%d: Now auto_role_swap_running\n",
-			 port->port_num);
-		return;
-	}
-
 	if (usb_role_switch_get_role(role_sw) == USB_ROLE_DEVICE) {
-		if (try_role == USB_ROLE_DEVICE) {
-			dev_info(dev, "port%d: Try device and now is device mode\n",
-				 port->port_num);
-			return;
-		}
-
-		if (!force_swap && __check_udc_configured(data, usb_node)) {
-			dev_info(dev, "port%d: Now is device mode and connected\n",
-			 port->port_num);
-			return;
-		}
 		dev_info(dev, "port%d: Now is device mode switch host mode\n",
 			 port->port_num);
 		usb_role_switch_set_role(role_sw, USB_ROLE_HOST);
 	} else if (usb_role_switch_get_role(role_sw) == USB_ROLE_HOST) {
-		if (try_role == USB_ROLE_HOST) {
-			dev_info(dev, "port%d: Try host and now is host mode\n",
-				 port->port_num);
-			return;
-		}
-
-		if (!force_swap && port->is_linked_on_host_mode) {
-			dev_info(dev, "port%d: Now is host mode and a device attached\n",
-				 port->port_num);
-			return;
-		}
 		dev_info(dev, "port%d: Now is host mode switch device mode\n",
 			 port->port_num);
 		usb_role_switch_set_role(role_sw, USB_ROLE_DEVICE);
@@ -1805,7 +1747,6 @@ static void run_auto_role_swap(struct manager_data *data,
 	else
 		timeout = port->auto_role_swap_time;
 
-	port->auto_role_swap_running = true;
 	dev_info(dev, "%s: Auto role swap check after %ds\n", __func__, timeout);
 	queue_delayed_work(data->wq_usb_manager, &port->auto_role_swap_work,
 			   msecs_to_jiffies(timeout * 1000));
@@ -1841,145 +1782,15 @@ static ssize_t auto_role_swap_store(struct device *dev,
 		flush_delayed_work(&port->auto_role_swap_work);
 		BUG_ON(delayed_work_pending(&port->auto_role_swap_work));
 		dev_info(dev, "USB: Cancel auto role swap check by user\n");
-		port->auto_role_swap_running = false;
 
 		return count;
 	}
 
-	run_auto_role_swap(data, port, value, USB_ROLE_NONE, false);
+	run_auto_role_swap(data, port, value);
 
 	return count;
 }
 static DEVICE_ATTR_RW(auto_role_swap);
-
-static ssize_t auto_data_role_swap_show(struct device *dev,
-	      struct device_attribute *attr, char *buf)
-{
-	char *ptr = buf;
-	int count = PAGE_SIZE;
-	int n;
-
-	n = scnprintf(ptr, count,
-		     "echo time > auto_data_role_swap ==> to enable auto data role swap\n");
-	ptr += n;
-	count -= n;
-	n = scnprintf(ptr, count,
-		     "(auto_data_role_swap only swap the data role, the power role remains)\n");
-	ptr += n;
-	count -= n;
-
-	return ptr - buf;
-}
-
-static ssize_t auto_data_role_swap_store(struct device *dev,
-	       struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct port_data *port = container_of(dev, struct port_data, dev);
-	struct manager_data *data = port->manager_data;
-	int value;
-
-	if (sscanf(buf, "%d", &value) != 1 || value >= INT_MAX || value <= -INT_MAX)
-		return -EINVAL;
-
-	if (value < 0) {
-		cancel_delayed_work_sync(&port->auto_role_swap_work);
-		flush_delayed_work(&port->auto_role_swap_work);
-		BUG_ON(delayed_work_pending(&port->auto_role_swap_work));
-		dev_info(dev, "USB: Cancel auto role swap check by user\n");
-		port->auto_role_swap_running = false;
-
-		return count;
-	}
-
-	port->is_only_data_role_swap = true;
-	dev_info(dev, "Only run auto data role swap.\n");
-	run_auto_role_swap(data, port, value, USB_ROLE_NONE, true);
-
-	return count;
-}
-static DEVICE_ATTR_RW(auto_data_role_swap);
-
-static ssize_t try_device_show(struct device *dev,
-	      struct device_attribute *attr, char *buf)
-{
-	char *ptr = buf;
-	int count = PAGE_SIZE;
-	int n;
-
-	n = scnprintf(ptr, count,
-		     "echo time > try_device ==> to enable auto role swap to device\n");
-	ptr += n;
-	count -= n;
-
-	return ptr - buf;
-}
-
-static ssize_t try_device_store(struct device *dev,
-	       struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct port_data *port = container_of(dev, struct port_data, dev);
-	struct manager_data *data = port->manager_data;
-	int value;
-
-	if (sscanf(buf, "%d", &value) != 1 || value >= INT_MAX || value <= -INT_MAX)
-		return -EINVAL;
-
-	if (value < 0) {
-		cancel_delayed_work_sync(&port->auto_role_swap_work);
-		flush_delayed_work(&port->auto_role_swap_work);
-		BUG_ON(delayed_work_pending(&port->auto_role_swap_work));
-		dev_info(dev, "USB: Cancel auto role swap check by user\n");
-		port->auto_role_swap_running = false;
-
-		return count;
-	}
-
-	run_auto_role_swap(data, port, value, USB_ROLE_DEVICE, false);
-
-	return count;
-}
-static DEVICE_ATTR_RW(try_device);
-
-static ssize_t try_host_show(struct device *dev,
-	      struct device_attribute *attr, char *buf)
-{
-	char *ptr = buf;
-	int count = PAGE_SIZE;
-	int n;
-
-	n = scnprintf(ptr, count,
-		     "echo time > try_host ==> to enable auto role swap to host\n");
-	ptr += n;
-	count -= n;
-
-	return ptr - buf;
-}
-
-static ssize_t try_host_store(struct device *dev,
-	       struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct port_data *port = container_of(dev, struct port_data, dev);
-	struct manager_data *data = port->manager_data;
-	int value;
-
-	if (sscanf(buf, "%d", &value) != 1 || value >= INT_MAX || value <= -INT_MAX)
-		return -EINVAL;
-
-	if (value < 0) {
-		cancel_delayed_work_sync(&port->auto_role_swap_work);
-		flush_delayed_work(&port->auto_role_swap_work);
-		BUG_ON(delayed_work_pending(&port->auto_role_swap_work));
-		dev_info(dev, "USB: Cancel auto role swap check by user\n");
-		port->auto_role_swap_running = false;
-
-		return count;
-	}
-
-	run_auto_role_swap(data, port, value, USB_ROLE_HOST, false);
-
-	return count;
-}
-static DEVICE_ATTR_RW(try_host);
 
 static struct attribute *port_attrs[] = {
 	&dev_attr_port_power.attr,
@@ -1992,9 +1803,6 @@ static const struct attribute_group port_attr_grp = {
 
 static struct attribute *port_swap_attrs[] = {
 	&dev_attr_auto_role_swap.attr,
-	&dev_attr_auto_data_role_swap.attr,
-	&dev_attr_try_device.attr,
-	&dev_attr_try_host.attr,
 	NULL,
 };
 
@@ -2203,6 +2011,19 @@ static int usb_port_clk_reset_get(struct manager_data *data,
 	struct property *prop;
 	const char *name;
 
+	dwc3_node = of_get_compatible_child(port_node, "snps,dwc3");
+	if (!dwc3_node)
+		dwc3_node = of_get_compatible_child(port_node, "synopsys,dwc3");
+
+	if (!dwc3_node)
+		return 0;
+
+	index = of_property_match_string(dwc3_node, "phy-names", "usb2-phy");
+	u2phy_node = of_parse_phandle(dwc3_node, "phys", index);
+
+	index = of_property_match_string(dwc3_node, "phy-names", "usb3-phy");
+	u3phy_node = of_parse_phandle(dwc3_node, "phys", index);
+
 	index = 0;
 	prop = of_find_property(port_node, "clock-names", NULL);
 	for (name = of_prop_next_string(prop, NULL);
@@ -2218,19 +2039,6 @@ static int usb_port_clk_reset_get(struct manager_data *data,
 	     name = of_prop_next_string(prop, name), index++) {
 		port->reset_mac[index] = usb_reset_get(port_node, name);
 	}
-
-	dwc3_node = of_get_compatible_child(port_node, "snps,dwc3");
-	if (!dwc3_node)
-		dwc3_node = of_get_compatible_child(port_node, "synopsys,dwc3");
-
-	if (!dwc3_node)
-		return 0;
-
-	index = of_property_match_string(dwc3_node, "phy-names", "usb2-phy");
-	u2phy_node = of_parse_phandle(dwc3_node, "phys", index);
-
-	index = of_property_match_string(dwc3_node, "phy-names", "usb3-phy");
-	u3phy_node = of_parse_phandle(dwc3_node, "phys", index);
 
 	index = 0;
 	prop = of_find_property(u2phy_node, "reset-names", NULL);
@@ -2263,7 +2071,7 @@ static inline struct gpio_data *__of_parse_port_gpio_mapping(
 	struct gpio_desc *gpio_desc;
 	int i;
 
-	gpio_desc = fwnode_gpiod_get_index(of_fwnode_handle(port_node), "realtek,power", 0,
+	gpio_desc = gpiod_get_from_of_node(port_node, "realtek,power-gpio", 0,
 					   GPIOD_OUT_HIGH | GPIOD_FLAGS_BIT_NONEXCLUSIVE,
 					   "usb-power-gpio");
 	if (IS_ERR(gpio_desc)) {
@@ -2373,7 +2181,6 @@ static int __put_port_setting(struct manager_data *data,
 		cancel_delayed_work_sync(&port->auto_role_swap_work);
 		flush_delayed_work(&port->auto_role_swap_work);
 		BUG_ON(delayed_work_pending(&port->auto_role_swap_work));
-		port->auto_role_swap_running = false;
 	}
 
 	usb_reset_put(port->type_c.reset_type_c);
@@ -2471,9 +2278,6 @@ static inline int __of_parse_port_setting(struct manager_data *data,
 		return 0;
 	}
 
-	if (of_device_is_compatible(port_node, "simple-bus"))
-		return __of_parse_port_setting_legacy(data, port, port_node, port_num);
-
 	port->port_num = port_num;
 	port->manager_data = data;
 	port->port_node = port_node;
@@ -2493,7 +2297,7 @@ static inline int __of_parse_port_setting(struct manager_data *data,
 			type_c->reset_type_c = usb_reset_get(dev_node, "type-c");
 
 			type_c->connector_switch_gpio =
-			fwnode_gpiod_get_index(of_fwnode_handle(dev_node), "realtek,connector-switch-gpio",
+				gpiod_get_from_of_node(dev_node, "realtek,connector-switch-gpio",
 						       0, GPIOD_OUT_HIGH, "usb-connector_switch");
 			if (IS_ERR(type_c->connector_switch_gpio))
 				dev_info(data->dev, "type c connector-switch-gpio no found");
@@ -2501,7 +2305,7 @@ static inline int __of_parse_port_setting(struct manager_data *data,
 				dev_info(data->dev, "type c get connector-switch-gpio (id=%d) OK\n",
 					 desc_to_gpio(type_c->connector_switch_gpio));
 			type_c->plug_side_switch_gpio =
-			fwnode_gpiod_get_index(of_fwnode_handle(dev_node), "realtek,plug-side-switch-gpio",
+				gpiod_get_from_of_node(dev_node, "realtek,plug-side-switch-gpio",
 						       0, GPIOD_OUT_HIGH, "usb-plug_side_switch");
 			if (IS_ERR(type_c->plug_side_switch_gpio))
 				dev_info(data->dev, "type c plug-side-switch-gpio no found");
@@ -2597,13 +2401,20 @@ static int parse_port_setting(struct manager_data *data,
 
 	data->disable_usb = true;
 
-	for (i = 0; i < MAX_USB_PORT_NUM; i++) {
+	for (i = 0; i < MAX_USB_PORT_NUM - 1; i++) {
 		snprintf(name, sz, "usb-port%d", i);
 		sub_node = of_get_child_by_name(node, name);
 		ret = __of_parse_port_setting(data, &data->port[i], sub_node, i);
 		if (ret)
 			goto out;
 	}
+
+	/* the last port is the legacy ehci/ohci host port */
+	snprintf(name, sz, "usb-port%d", i);
+	sub_node = of_get_child_by_name(node, name);
+	ret = __of_parse_port_setting_legacy(data, &data->port[i], sub_node, i);
+	if (ret)
+		goto out;
 
 	for (i = 0; i < MAX_USB_PORT_NUM; i++) {
 		if (port_can_enable(&data->port[i]))
@@ -2633,50 +2444,6 @@ static int gadget_match(struct device *dev, void *data)
 	return (sysfs_streq(dev_name(dev), name));
 }
 
-static bool __check_udc_configured(struct manager_data *data, struct device_node *usb_node)
-{
-	struct device *dev = data->dev;
-	struct device *gadget_dev;
-	struct usb_gadget *gadget;
-	bool configured = false;
-	struct device_node *dwc3_node;
-	struct platform_device *dwc3_pdev = NULL;
-	struct device *dwc3_dev;
-
-	dwc3_node = of_get_compatible_child(usb_node, "snps,dwc3");
-
-	if (!dwc3_node)
-		dwc3_node = of_get_compatible_child(usb_node, "synopsys,dwc3");
-	if (!dwc3_node) {
-		dev_err(dev, "failed to find dwc3 core node\n");
-		return configured;
-	}
-
-	dwc3_pdev = of_find_device_by_node(dwc3_node);
-
-	if (!dwc3_pdev) {
-		dev_err(dev, "failed to find dwc3 core platform_device\n");
-		of_node_put(dwc3_node);
-		return configured;
-	}
-
-	of_node_put(dwc3_node);
-	dwc3_dev = &dwc3_pdev->dev;
-
-	gadget_dev = device_find_child(dwc3_dev, "gadget", gadget_match);
-
-	if (!gadget_dev)
-		return configured;
-
-	gadget = dev_to_usb_gadget(gadget_dev);
-
-	if (gadget && gadget->state == USB_STATE_CONFIGURED)
-		configured = true;
-
-	put_device(gadget_dev);
-	return configured;
-}
-
 static void auto_role_swap_func(struct work_struct *work)
 {
 	struct port_data *port = container_of(work, struct port_data,
@@ -2699,7 +2466,6 @@ static void auto_role_swap_func(struct work_struct *work)
 			port->role_sw = usb_role_switch_find_by_fwnode(&usb_node->fwnode);
 	}
 
-	port->is_only_data_role_swap = false;
 	role_sw = port->role_sw;
 
 	if (!usb_dev)
@@ -2708,9 +2474,42 @@ static void auto_role_swap_func(struct work_struct *work)
 		return;
 
 	if (usb_role_switch_get_role(role_sw) == USB_ROLE_DEVICE) {
-		if (!__check_udc_configured(data, usb_node)) {
-			dev_info(dev, "port%d: In device mode, NO host connect. Switch to Host mode\n",
-				 port->port_num);
+		struct device *gadget_dev;
+		struct usb_gadget *gadget;
+		bool configured = false;
+		struct device_node *dwc3_node;
+		struct platform_device *dwc3_pdev = NULL;
+		struct device *dwc3_dev;
+
+		dwc3_node = of_get_compatible_child(usb_node, "snps,dwc3");
+		if (!dwc3_node)
+			dwc3_node = of_get_compatible_child(usb_node, "synopsys,dwc3");
+		if (!dwc3_node) {
+			dev_err(dev, "failed to find dwc3 core node\n");
+			return;
+		}
+
+		dwc3_pdev = of_find_device_by_node(dwc3_node);
+		if (!dwc3_pdev) {
+			dev_err(dev, "failed to find dwc3 core platform_device\n");
+			of_node_put(dwc3_node);
+			return;
+		}
+
+		of_node_put(dwc3_node);
+		dwc3_dev = &dwc3_pdev->dev;
+
+		gadget_dev = device_find_child(dwc3_dev, "gadget", gadget_match);
+		if (gadget_dev) {
+			gadget = dev_to_usb_gadget(gadget_dev);
+			if (gadget && gadget->state == USB_STATE_CONFIGURED)
+				configured = true;
+			put_device(gadget_dev);
+		}
+
+		if (!configured) {
+			dev_info(dev, "port%d %s: In device mode, NO host connect. Switch to Host mode\n",
+				 port->port_num, dev_name(dwc3_dev));
 			usb_role_switch_set_role(role_sw, USB_ROLE_HOST);
 		}
 	} else if (usb_role_switch_get_role(role_sw) == USB_ROLE_HOST) {
@@ -2723,7 +2522,6 @@ static void auto_role_swap_func(struct work_struct *work)
 		dev_dbg(dev, "%s: %s is unknown mode (%d)\n",
 			__func__, dev_name(usb_dev), usb_role_switch_get_role(role_sw));
 	}
-	port->auto_role_swap_running = false;
 }
 
 static const struct of_device_id of_bus_match_table[] = {
@@ -2911,21 +2709,8 @@ static void rtk_usb_manager_complete(struct device *dev)
 static int rtk_usb_manager_suspend(struct device *dev)
 {
 	struct manager_data *data = dev_get_drvdata(dev);
-	struct pm_dev_param *pm_param = rtk_pm_get_param(PM);
-	struct pm_private *dev_pm = dev_get_drvdata(pm_param->dev);
-	unsigned int wakeup_source = rtk_pm_get_wakeup_source(dev_pm);
 
 	dev_info(dev, "[USB] Enter %s\n", __func__);
-
-	if (data->usb_iso_mode) {
-		if (!(wakeup_source & BIT(RESUME_V2_USB))) {
-			dev_err(dev, "USB is not set as wakeup source, need to check.\n");
-			data->usb_iso_mode = false;
-		}
-	}
-
-	if (wakeup_source & BIT(RESUME_V2_USB))
-		data->usb_iso_mode = true;
 
 	if (!data->usb_iso_mode) {
 		usb_port_power_on_off(data, false);
