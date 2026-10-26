@@ -163,8 +163,8 @@ const struct thermal_sensor_desc rtd1319d_sensor_desc = {
 
 static void rtd1315e_sensor_reset(struct thermal_sensor_device *tdev)
 {
-	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL0, 0x08f83333);
-	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL1, 0x00365800);
+	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL0, 0x09060000);
+	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL1, 0x003642b8);
 	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL2, 0x00011194);
 	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL2, 0x00031194);
 
@@ -186,7 +186,7 @@ const struct thermal_sensor_desc rtd1315e_sensor_desc = {
 
 static void rtd1625_sc_wrap_sensor_reset(struct thermal_sensor_device *tdev)
 {
-	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL0, 0x09060000);
+	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL0, 0x08f83333);
 	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL1, 0x003642b8);
 	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL2, 0x00011194);
 	thermal_sensor_device_reg_write(tdev, TM_SENSOR_CTRL2, 0x00031194);
@@ -212,7 +212,7 @@ const struct thermal_sensor_desc rtd1625_sc_wrap_sensor_desc = {
 static void rtd1625_sys_sensor_reset(struct thermal_sensor_device *tdev)
 {
 	thermal_sensor_device_reg_write(tdev, SYS_TM_SENSOR_CTRL0, 0x09060000);
-	thermal_sensor_device_reg_write(tdev, SYS_TM_SENSOR_CTRL1, 0x003642b8);
+	thermal_sensor_device_reg_write(tdev, SYS_TM_SENSOR_CTRL1, 0x00365800);
 	thermal_sensor_device_reg_write(tdev, SYS_TM_SENSOR_CTRL2, 0x00011194);
 	thermal_sensor_device_reg_write(tdev, SYS_TM_SENSOR_CTRL2, 0x00031194);
 	thermal_sensor_device_reg_write(tdev, SYS_TM_SENSOR_CTRL3, 0x00000000);

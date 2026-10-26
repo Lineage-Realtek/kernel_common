@@ -47,6 +47,7 @@ struct thermal_sensor_device {
 
 	void *priv_data;
 	ktime_t last_reset_time;
+	struct mutex lock;
 };
 
 static inline
@@ -66,7 +67,6 @@ int thermal_sensor_device_reg_write(struct thermal_sensor_device *tdev,
 }
 
 
-extern const struct thermal_sensor_desc rtd119x_sensor_desc;
 extern const struct thermal_sensor_desc rtd129x_sensor_desc;
 extern const struct thermal_sensor_desc rtd139x_sensor_desc;
 extern const struct thermal_sensor_desc rtd1619_sensor_desc;
