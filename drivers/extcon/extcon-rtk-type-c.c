@@ -1353,7 +1353,9 @@ static int extcon_rtk_type_c_probe(struct platform_device *pdev)
 	if (soc_device_match(rtk_soc_kylin)) {
 		struct gpio_desc *gpio;
 
-		gpio = fwnode_gpiod_get_index(of_fwnode_handle(dev->of_node),
+		/* for kernel 5.15 fwnode_gpiod_get_index does not work */
+		//gpio = fwnode_gpiod_get_index(of_fwnode_handle(dev->of_node),
+		gpio = gpiod_get_from_of_node((dev->of_node),
 					      "realtek,rd-ctrl-gpios",
 					      0, GPIOD_OUT_HIGH, "rd-ctrl-gpio");
 		if (IS_ERR(gpio)) {
@@ -1705,39 +1707,6 @@ static const struct type_c_cfg rtd1315e_type_c_cfg = {
 	.use_defalut_parameter = false,
 };
 
-static const struct type_c_cfg rtd1625_type_c_cfg = {
-	.parameter_ver = PARAMETER_V1,
-	.cc_dfp_mode = CC_MODE_DFP_1_5,
-	.cc1_param = { .rp_4p7k_code = 0xe,
-		       .rp_36k_code = 0x3,
-		       .rp_12k_code = 0xe,
-		       .rd_code = 0xf,
-		       .ra_code = 0x6,
-		       .vref_2p6v = 0x7,
-		       .vref_1p23v = 0x7,
-		       .vref_0p8v = 0x8,
-		       .vref_0p66v = 0x7,
-		       .vref_0p4v = 0x7,
-		       .vref_0p2v = 0x7,
-		       .vref_1_1p6v = 0x7,
-		       .vref_0_1p6v = 0x7 },
-	.cc2_param = { .rp_4p7k_code = 0xe,
-		       .rp_36k_code = 0x3,
-		       .rp_12k_code = 0xe,
-		       .rd_code = 0xf,
-		       .ra_code = 0x6,
-		       .vref_2p6v = 0x7,
-		       .vref_1p23v = 0x7,
-		       .vref_0p8v = 0x8,
-		       .vref_0p66v = 0x7,
-		       .vref_0p4v = 0x7,
-		       .vref_0p2v = 0x8,
-		       .vref_1_1p6v = 0x7,
-		       .vref_0_1p6v = 0x7 },
-	.debounce_val = 0x7f, /* 1b,1us 7f,4.7us */
-	.use_defalut_parameter = true,
-};
-
 static const struct of_device_id extcon_rtk_type_c_match[] = {
 	{ .compatible = "realtek,rtd1295-type-c", .data = &rtd1295_type_c_cfg },
 	{ .compatible = "realtek,rtd1312c-type-c", .data = &rtd1312c_type_c_cfg },
@@ -1747,7 +1716,6 @@ static const struct of_device_id extcon_rtk_type_c_match[] = {
 	{ .compatible = "realtek,rtd1395-type-c", .data = &rtd1395_type_c_cfg },
 	{ .compatible = "realtek,rtd1619-type-c", .data = &rtd1619_type_c_cfg },
 	{ .compatible = "realtek,rtd1619b-type-c", .data = &rtd1619b_type_c_cfg },
-	{ .compatible = "realtek,rtd1625-type-c", .data = &rtd1625_type_c_cfg },
 	{},
 };
 MODULE_DEVICE_TABLE(of, extcon_rtk_type_c_match);
