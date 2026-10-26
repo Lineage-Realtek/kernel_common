@@ -203,6 +203,7 @@ int tee_session_calc_client_uuid(uuid_t *uuid, u32 connection_method,
  * subsystem and from drivers that implements their own shm pool manager.
  */
 struct tee_shm {
+	struct tee_device *teedev;
 	struct tee_context *ctx;
 	phys_addr_t paddr;
 	void *kaddr;
@@ -356,6 +357,9 @@ static inline bool tee_shm_is_registered(struct tee_shm *shm)
 {
 	return shm && (shm->flags & TEE_SHM_REGISTER);
 }
+
+
+struct tee_shm *tee_shm_register_fd(struct tee_context *ctx, int fd);
 
 /**
  * tee_shm_free() - Free shared memory

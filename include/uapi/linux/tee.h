@@ -374,6 +374,18 @@ struct tee_iocl_supp_send_arg {
  * with actual flags as defined by TEE_IOCTL_SHM_* above.
  * This structure is used as argument for TEE_IOC_SHM_REGISTER below.
  */
+struct tee_ioctl_shm_register_fd_data {
+	__s64 fd;
+	__u64 size;
+	__u32 flags;
+	__s32 id;
+}__attribute__((aligned(8)));
+
+
+#define TEE_IOC_SHM_REGISTER_FD	_IOWR(TEE_IOC_MAGIC, TEE_IOC_BASE + 8, \
+				     struct tee_ioctl_shm_register_fd_data)
+
+
 struct tee_ioctl_shm_register_data {
 	__u64 addr;
 	__u64 length;
