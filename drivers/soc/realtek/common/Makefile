@@ -18,6 +18,7 @@ obj-$(CONFIG_RTK_DPI_COORD)		+= dpi/
 obj-$(CONFIG_RTK_FAN)			+= rtk_fan.o
 obj-$(CONFIG_RTK_FSS)			+= rtk_fss.o
 obj-$(CONFIG_RTK_FWDBG)			+= rtk_fwdbg.o
+obj-$(CONFIG_RTK_SHA1) += rtk_sha1.o
 obj-$(CONFIG_RTK_GPIO_MANAGER)		+= rtk_gpio_manager.o
 obj-$(CONFIG_RTK_HSE)			+= hse/
 obj-$(CONFIG_RTK_IFCP_CLIENT)		+= rtk_ifcp_client.o

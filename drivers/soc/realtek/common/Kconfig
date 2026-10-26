@@ -26,7 +26,7 @@ config RTK_ACPU_VE1
 
 config RTK_AVCPU_LOG
 	tristate "Realtek AVCPU share memory logging system"
-	depends on RTK_FW_REMOTEPROC
+	depends on RPMSG_RTK_RPC
 	default y
 	help
 	  Enable AVCPU share memory logging read from userspace
@@ -84,6 +84,11 @@ config RTK_FWDBG
 	default y
 	help
 	  Realtek FW Debug driver
+
+config RTK_SHA1
+	tristate "Realtek SHA1"
+	help
+	  Realtek SHA1
 
 config RTK_GPIO_MANAGER
 	tristate "Realtek GPIO Manager driver"
