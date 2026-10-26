@@ -65,7 +65,6 @@ struct rtk_rtc_device {
 	int bias;
 	spinlock_t lock;
 	const struct rtk_rtc_config *cfg;
-	bool use_hsec;
 };
 
 static int rtk_rtc_time_to_reg(struct rtk_rtc_device *rdev, int type, time64_t time);
@@ -259,9 +258,6 @@ static void rtk_rtc_init(struct rtk_rtc_device *rdev)
 
 	__rtk_rtc_enable(rdev);
 done:
-	if (rdev->use_hsec)
-		rtk_rtc_reg_write(rdev, MIS_RTCCR, MIS_DRTCCR_HSUINTE);
-
 	spin_unlock_irqrestore(&rdev->lock, flags);
 }
 
@@ -443,8 +439,6 @@ static int rtk_rtc_parse_dt_config(struct device_node *np, struct rtk_rtc_device
 
 	rdev->base_time = mktime64(base_year, 1, 1, 0, 0, 0);
 
-	rdev->use_hsec = of_property_present(np, "use-hsec");
-
 	if (!rdev->cfg->has_acr2)
 		return 0;
 
@@ -539,6 +533,7 @@ static int rtk_rtc_probe(struct platform_device *pdev)
 		goto err_nortc;
 	}
 
+	rdev->rtc->uie_unsupported = 1;
 	return 0;
 
 err_nortc:
@@ -567,42 +562,6 @@ static void rtk_rtc_shutdown(struct platform_device *pdev)
 	rtk_rtc_save_to_ptime(rdev);
 }
 
-static int rtk_rtc_suspend(struct device *dev)
-{
-	struct rtk_rtc_device *rdev = dev_get_drvdata(dev);
-	unsigned int val;
-
-	if (rdev->use_hsec) {
-		val = rtk_rtc_reg_read(rdev, MIS_RTCCR);
-		val &= ~MIS_DRTCCR_HSUINTE;
-		rtk_rtc_reg_write(rdev, MIS_RTCCR, val);
-	}
-
-	return 0;
-}
-
-static int rtk_rtc_resume(struct device *dev)
-{
-	struct rtk_rtc_device *rdev = dev_get_drvdata(dev);
-	unsigned int val;
-
-	if (rdev->use_hsec) {
-		val = rtk_rtc_reg_read(rdev, MIS_RTCCR);
-		val |= MIS_DRTCCR_HSUINTE;
-		rtk_rtc_reg_write(rdev, MIS_RTCCR, val);
-	}
-
-	return 0;
-}
-
-static const struct dev_pm_ops rtk_rtc_pm_ops = {
-	.suspend	= rtk_rtc_suspend,
-	.resume		= rtk_rtc_resume,
-	.freeze		= rtk_rtc_suspend,
-	.thaw		= rtk_rtc_resume,
-	.restore	= rtk_rtc_resume,
-};
-
 static const struct rtk_rtc_config rtd1195_cfg = { 0, 0 };
 static const struct rtk_rtc_config rtd1619_cfg = { 1, 0 };
 static const struct rtk_rtc_config rtd1319d_cfg = { 0, 1 };
@@ -624,7 +583,6 @@ static struct platform_driver rtk_rtc_driver = {
 	.driver = {
 		.name = "rtk-rtc",
 		.of_match_table = rtk_rtc_ids,
-		.pm = &rtk_rtc_pm_ops,
 	},
 };
 module_platform_driver(rtk_rtc_driver);
