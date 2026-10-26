@@ -65,7 +65,7 @@ static struct irq_chip rtd_pcie_msi_irq_chip = {
 };
 
 static struct msi_domain_info rtd_pcie_msi_domain_info = {
-	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS | MSI_FLAG_MULTI_PCI_MSI | MSI_FLAG_PCI_MSIX),
+	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS | MSI_FLAG_MULTI_PCI_MSI),
 	.chip	= &rtd_pcie_msi_irq_chip,
 };
 
@@ -76,24 +76,6 @@ irqreturn_t rtd_handle_mac_msi_irq(struct rtd_pcie_port *pp)
 	unsigned long val;
 	u32 status, num_ctrls;
 	irqreturn_t ret = IRQ_NONE;
-	u32 gnr = readl(pp->ctrl_base + DVR_GNR_INT);
-
-	if (gnr & BIT(S_INTP_CFG_AER_RC_MSI)) {
-		/*
-		 * DVR_GNR_INT is read-only status; it deasserts automatically
-		 * once PCIE_AER_MSI_STATUS is cleared.  PCIE_AER_MSI_STATUS can
-		 * only be cleared after PCI Root Error Status is 0, so dispatch
-		 * the Root Port's MSI IRQ first so aer_irq clears Root Error
-		 * Status.
-		 */
-		if (pp->rc_msi_hwirq != ULONG_MAX) {
-			irq = irq_find_mapping(pp->msi_irq_domain, pp->rc_msi_hwirq);
-			if (irq)
-				generic_handle_irq(irq);
-		}
-		writel(BIT(0), pp->ctrl_base + PCIE_AER_MSI_STATUS);
-		ret = IRQ_HANDLED;
-	}
 
 	num_ctrls = RTK_MAX_MSI_IRQS / RTK_MAX_MSI_IRQS_PER_CTRL;
 
@@ -108,7 +90,7 @@ irqreturn_t rtd_handle_mac_msi_irq(struct rtd_pcie_port *pp)
 		pos = 0;
 		while ((pos = find_next_bit(&val, RTK_MAX_MSI_IRQS_PER_CTRL,
 					    pos)) != RTK_MAX_MSI_IRQS_PER_CTRL) {
-			irq = irq_find_mapping(pp->msi_irq_domain,
+			irq = irq_find_mapping(pp->irq_domain,
 					       (i * RTK_MAX_MSI_IRQS_PER_CTRL) +
 					       pos);
 			generic_handle_irq(irq);
@@ -118,28 +100,6 @@ irqreturn_t rtd_handle_mac_msi_irq(struct rtd_pcie_port *pp)
 
 	return ret;
 }
-
-/* MSI int handler */
-irqreturn_t rtd_handle_intx_irq(struct rtd_pcie_port *pp)
-{
-	int pos, irq;
-	u32 status;
-	unsigned long val;
-
-	status = readl(pp->ctrl_base + DVR_PCIE_INT);
-	if (!status)
-		return IRQ_NONE;
-	pos = 0;
-	val = status;
-	while ((pos = find_next_bit(&val, PCI_NUM_INTX, pos)) != PCI_NUM_INTX) {
-		irq = irq_find_mapping(pp->intx_irq_domain, pos);
-		generic_handle_irq(irq);
-		pos++;
-	}
-
-	return IRQ_HANDLED;
-}
-
 
 irqreturn_t rtd13xx_handle_wrapper_msi_irq(int this_irq, void *devid)
 {
@@ -155,7 +115,7 @@ irqreturn_t rtd13xx_handle_wrapper_msi_irq(int this_irq, void *devid)
 		return IRQ_HANDLED;
 
 	pos = 0;
-	irq = irq_find_mapping(pp->msi_irq_domain, pos);
+	irq = irq_find_mapping(pp->irq_domain, pos);
 	if (irq != 0) {
 		generic_handle_irq(irq);
 		return IRQ_HANDLED;
@@ -169,7 +129,7 @@ irqreturn_t rtd_handle_wrapper_msi_irq(struct rtd_pcie_port *pp)
 	int pos, irq;
 
 	pos = 0;
-	irq = irq_find_mapping(pp->msi_irq_domain, pos);
+	irq = irq_find_mapping(pp->irq_domain, pos);
 	if (irq != 0) {
 		generic_handle_irq(irq);
 		return IRQ_HANDLED;
@@ -198,7 +158,7 @@ irqreturn_t rtd_handle_wrapper_msix_irq(struct rtd_pcie_port *pp)
 		pos = 0;
 		while ((pos = find_next_bit(&val, RTK_MAX_MSIX_IRQS_PER_CTRL,
 					    pos)) != RTK_MAX_MSIX_IRQS_PER_CTRL) {
-			irq = irq_find_mapping(pp->msi_irq_domain,
+			irq = irq_find_mapping(pp->irq_domain,
 					       (i * RTK_MAX_MSIX_IRQS_PER_CTRL) +
 					       pos);
 			generic_handle_irq(irq);
@@ -210,21 +170,6 @@ irqreturn_t rtd_handle_wrapper_msix_irq(struct rtd_pcie_port *pp)
 }
 
 
-static irqreturn_t rtd_pcie_handle_irq(int this_irq, void *devid)
-{
-	struct rtd_pcie_port *pp = devid;
-	irqreturn_t msi_ret = IRQ_NONE, intx_ret = IRQ_NONE;
-
-	if (pp->msi_irq_domain)
-		msi_ret = rtd_handle_mac_msi_irq(pp);
-	if (pp->intx_irq_domain)
-		intx_ret = rtd_handle_intx_irq(pp);
-
-	if (!msi_ret && !intx_ret)
-		return IRQ_NONE;
-
-	return IRQ_HANDLED;
-}
 
 /* Chained MSI interrupt service routine */
 static void rtd_chained_msi_isr(struct irq_desc *desc)
@@ -243,7 +188,6 @@ static void rtd_chained_msi_isr(struct irq_desc *desc)
 static void rtd_pci_setup_msi_msg(struct irq_data *d, struct msi_msg *msg)
 {
 	struct rtd_pcie_port *pp = irq_data_get_irq_chip_data(d);
-	struct pci_dev *pdev;
 	u64 msi_target;
 
 	msi_target = (u64)pp->msi_data;
@@ -252,11 +196,6 @@ static void rtd_pci_setup_msi_msg(struct irq_data *d, struct msi_msg *msg)
 	msg->address_hi = upper_32_bits(msi_target);
 
 	msg->data = d->hwirq;
-
-	/* Track hwirq of Root Port so DVR_GNR_INT handler can dispatch to it */
-	pdev = to_pci_dev(irq_data_get_msi_desc(d)->dev);
-	if (pci_pcie_type(pdev) == PCI_EXP_TYPE_ROOT_PORT)
-		pp->rc_msi_hwirq = d->hwirq;
 
 	dev_dbg(pp->dev, "msi#%d address_hi %#x address_lo %#x\n",
 		(int)d->hwirq, msg->address_hi, msg->address_lo);
@@ -431,6 +370,7 @@ static void rtd_pci_wrapper_msix_bottom_ack(struct irq_data *d)
 
 }
 
+
 static struct irq_chip rtd_pci_wrapper_msix_bottom_irq_chip = {
 	.name = "RTD_PCI-MSI",
 	.irq_ack = rtd_pci_wrapper_msix_bottom_ack,
@@ -494,21 +434,21 @@ int rtd_pcie_allocate_domains(struct rtd_pcie_port *pp)
 {
 	struct fwnode_handle *fwnode = of_node_to_fwnode(pp->dev->of_node);
 
-	pp->msi_irq_domain = irq_domain_create_linear(fwnode, pp->msi_max_vector,
+	pp->irq_domain = irq_domain_create_linear(fwnode, pp->msi_max_vector,
 					       &rtd_pcie_msi_domain_ops, pp);
-	if (!pp->msi_irq_domain) {
+	if (!pp->irq_domain) {
 		dev_err(pp->dev, "Failed to create IRQ domain\n");
 		return -ENOMEM;
 	}
 
-	irq_domain_update_bus_token(pp->msi_irq_domain, DOMAIN_BUS_NEXUS);
+	irq_domain_update_bus_token(pp->irq_domain, DOMAIN_BUS_NEXUS);
 
 	pp->msi_domain = pci_msi_create_irq_domain(fwnode,
 						   &rtd_pcie_msi_domain_info,
-						   pp->msi_irq_domain);
+						   pp->irq_domain);
 	if (!pp->msi_domain) {
 		dev_err(pp->dev, "Failed to create MSI domain\n");
-		irq_domain_remove(pp->msi_irq_domain);
+		irq_domain_remove(pp->irq_domain);
 		return -ENOMEM;
 	}
 
@@ -523,7 +463,7 @@ void rtd_pcie_free_msi(struct rtd_pcie_port *pp)
 	}
 
 	irq_domain_remove(pp->msi_domain);
-	irq_domain_remove(pp->msi_irq_domain);
+	irq_domain_remove(pp->irq_domain);
 
 	if (pp->msi_page)
 		__free_page(pp->msi_page);
@@ -532,73 +472,12 @@ void rtd_pcie_free_msi(struct rtd_pcie_port *pp)
 static void rtd_pcie_mac_msi_host_init(struct rtd_pcie_port *pp)
 {
 	u64 msi_target;
-	u32 i, num_ctrls;
 
-	writel(readl(pp->ctrl_base + PCIE_INT_CTR) | BIT(10), pp->ctrl_base + PCIE_INT_CTR);
 	msi_target = (u64)pp->msi_data;
 	writel(upper_32_bits(msi_target), pp->ctrl_base + PCIE_MSI_ADDR_HI);
 	writel(lower_32_bits(msi_target), pp->ctrl_base + PCIE_MSI_ADDR_LO);
 
-	num_ctrls = RTK_MAX_MSI_IRQS / RTK_MAX_MSI_IRQS_PER_CTRL;
-
-	for (i = 0; i < num_ctrls; i++) {
-		writel(~0x0, pp->ctrl_base + PCIE_MSI_INTR0_ENABLE + i * 4);
-	}
-}
-
-static int rtd_pcie_intx_irq_map(struct irq_domain *d,
-			     unsigned int virq, irq_hw_number_t hwirq)
-{
-	struct rtd_pcie_port *pp = d->host_data;
-
-	irq_set_status_flags(virq, IRQ_LEVEL);
-	irq_set_chip_and_handler(virq, &pp->intx_irq_chip,
-				 handle_level_irq);
-	irq_set_chip_data(virq, pp);
-
-	return 0;
-}
-
-
-static const struct irq_domain_ops rtd_pcie_intx_domain_ops = {
-	.map = rtd_pcie_intx_irq_map,
-	.xlate = irq_domain_xlate_onecell,
-};
-
-static int rtd_pcie_intx_init(struct rtd_pcie_port *pp)
-{
-	struct device *dev = pp->dev;
-	struct device_node *node = dev->of_node;
-	struct device_node *pcie_intx_node;
-	struct irq_chip *irq_chip;
-	int ret = 0;
-
-	pcie_intx_node =  of_get_next_child(node, NULL);
-	if (!pcie_intx_node) {
-		dev_err(dev, "No PCIe Intc node found\n");
-		return -ENODEV;
-	}
-	irq_chip = &pp->intx_irq_chip;
-
-	irq_chip->name = devm_kasprintf(dev, GFP_KERNEL, "intx-irq");
-	if (!irq_chip->name) {
-		ret = -ENOMEM;
-		goto out_put_node;
-	}
-
-	irq_chip->irq_set_affinity = rtd_pci_msi_set_affinity,
-
-	pp->intx_irq_domain = irq_domain_add_linear(pcie_intx_node, PCI_NUM_INTX,
-				      &rtd_pcie_intx_domain_ops, pp);
-	if (!pp->intx_irq_domain) {
-		dev_err(dev, "Failed to get a INTx IRQ domain\n");
-		ret = -ENOMEM;
-		goto out_put_node;
-	}
-
-out_put_node:
-	of_node_put(pcie_intx_node);
-	return ret;
+	writel(~0x0, pp->ctrl_base + PCIE_MSI_INTR0_ENABLE);
 }
 
 
@@ -606,10 +485,16 @@ static int rtd_pcie_mac_msi_init(struct rtd_pcie_port *pp)
 {
 	int ret;
 
-	pp->rc_msi_hwirq = ULONG_MAX;
-	pp->msi_max_vector = RTK_MAX_MSI_IRQS;
-	pp->msi_page = alloc_page(GFP_DMA32);
-	pp->msi_data = page_to_phys(pp->msi_page);
+	pp->msi_max_vector = RTK_MSI_DEF_NUM_VECTORS;
+	pp->msi_page = alloc_page(GFP_KERNEL);
+	pp->msi_data = dma_map_page(pp->dev, pp->msi_page, 0, PAGE_SIZE,
+				    DMA_FROM_DEVICE);
+	if (dma_mapping_error(pp->dev, pp->msi_data)) {
+		dev_err(pp->dev, "Failed to map MSI data\n");
+		__free_page(pp->msi_page);
+		pp->msi_page = NULL;
+		return -ENOMEM;
+	}
 	pp->ops->msi_ops->msi_host_init(pp);
 	pp->msi_irq_chip = &rtd_pci_mac_msi_bottom_irq_chip;
 
@@ -617,33 +502,13 @@ static int rtd_pcie_mac_msi_init(struct rtd_pcie_port *pp)
 	if (ret)
 		return ret;
 
+	if (pp->msi_irq)
+		irq_set_chained_handler_and_data(pp->msi_irq,
+				rtd_chained_msi_isr, pp);
+
 	return 0;
 
 }
-
-static int rtd_pcie_irq_init(struct rtd_pcie_port *pp)
-{
-	int ret;
-
-	ret = rtd_pcie_mac_msi_init(pp);
-	if (ret)
-		dev_err(pp->dev, "mac msi init failed\n");
-
-	ret = rtd_pcie_intx_init(pp);
-	if (ret)
-		dev_err(pp->dev, "INTx init failed\n");
-
-	if (pp->msi_irq_domain || pp->intx_irq_domain) {
-		ret = request_irq(pp->msi_irq, rtd_pcie_handle_irq, IRQF_SHARED, pp->ops->name, pp);
-		if (ret) {
-			dev_err(pp->dev, "failed to request irq\n");
-			return ret;
-		}
-	}
-
-	return 0;
-}
-
 
 static void rtd_pcie_wrapper_msi_host_init(struct rtd_pcie_port *pp)
 {
@@ -781,16 +646,19 @@ static int indirect_cfg_read(struct rtd_pcie_port *pp, struct pci_bus *bus, unsi
 	unsigned char mask;
 	int try_count = 20000;
 
+	if (pci_is_root_bus(bus) && (addr & 0xf80000))
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
 	mask = pci_byte_mask(addr, size);
 
 	if (!mask)
 		return PCIBIOS_SET_FAILED;
 
-	if (pci_is_root_bus(bus->parent)) {
+	if (pci_is_root_bus(bus))
 		writel(0x10, pp->ctrl_base + PCIE_INDIR_CTR);
-	} else {
+	else
 		writel(0x14, pp->ctrl_base + PCIE_INDIR_CTR);
-	}
+
 	writel(CFG_ST_ERROR|CFG_ST_DONE, pp->ctrl_base + PCIE_CFG_ST);
 	writel((addr & ~0x3), pp->ctrl_base + PCIE_CFG_ADDR);
 	writel(BYTE_CNT(mask) | BYTE_EN | WRRD_EN(0), pp->ctrl_base + PCIE_CFG_EN);
@@ -889,6 +757,9 @@ static int indirect_cfg_write(struct rtd_pcie_port *pp,
 	unsigned char mask;
 	int try_count = 1000;
 
+	if (pci_is_root_bus(bus) && (addr & 0xf80000))
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
 	mask = pci_byte_mask(addr, size);
 
 	if (!mask)
@@ -896,10 +767,11 @@ static int indirect_cfg_write(struct rtd_pcie_port *pp,
 
 	data = (data << pci_bit_shift(addr)) & pci_bit_mask(mask);
 
-	if (pci_is_root_bus(bus->parent))
+	if (pci_is_root_bus(bus))
 		writel(0x12, pp->ctrl_base + PCIE_INDIR_CTR);
 	else
 		writel(0x16, pp->ctrl_base + PCIE_INDIR_CTR);
+
 	writel(CFG_ST_ERROR|CFG_ST_DONE, pp->ctrl_base + PCIE_CFG_ST);
 	writel(addr & ~0x3, pp->ctrl_base + PCIE_CFG_ADDR);
 	writel(data, pp->ctrl_base + PCIE_CFG_WDATA);
@@ -961,38 +833,7 @@ static struct pci_ops rtd_pcie_cfg_ops = {
 };
 
 
-void __iomem *rtd_pcie_host_map_bus(struct pci_bus *bus, unsigned int devfn, int where)
-{
-	struct rtd_pcie_port *pp = bus->sysdata;
 
-	if (PCI_SLOT(devfn) > 0)
-		return NULL;
-
-	return pp->ctrl_base + where;
-}
-
-static struct pci_ops rtd_pcie_host_ops = {
-	.map_bus = rtd_pcie_host_map_bus,
-	.read = pci_generic_config_read,
-	.write = pci_generic_config_write,
-};
-
-static int check_pipe_clock_ready(struct rtd_pcie_port *pp)
-{
-	int timeout = 50;
-	int ret = 0;
-
-	while (!(readl(pp->ctrl_base + PCIE_MAC_ST) & BIT(16)) && --timeout) {
-		udelay(10);
-	}
-
-	if (!timeout) {
-		ret = -EBUSY;
-		dev_err(pp->dev, "pipe clock timeout\n");
-	}
-
-	return ret;
-}
 
 static u32 get_pcie_mac_stat(struct rtd_pcie_port *pp)
 {
@@ -1020,24 +861,21 @@ static int pcie_link_init(struct rtd_pcie_port *pp)
 	int cur_link_speed;
 	u32 ltssm;
 	u32 mac_stat;
-	int i;
 
 	ret = gpiod_direction_output(pp->perst_gpio, 0);
 	if (ret)
 		dev_err(pp->dev, "cannot set gpio\n");
 
 	writel(0x00140010, pp->ctrl_base + PCIE_SYS_CTR);
-	if (pp->speed_mode != 0) {
+	if (pp->speed_mode == 0) {
 		tmp = readl(pp->ctrl_base + LINK_CONTROL2_LINK_STATUS2_REG);
-		writel((tmp & ~0xf) | pp->speed_mode, pp->ctrl_base + LINK_CONTROL2_LINK_STATUS2_REG);
-		dev_info(pp->dev, "Host Set Link Speed on Gen%d\n", pp->speed_mode);
+		writel(tmp | 0x1, pp->ctrl_base + LINK_CONTROL2_LINK_STATUS2_REG);
+		dev_info(pp->dev, "Host Set Link Speed on Gen1\n");
 	}
 
 	/*phy mdio setting*/
 	phy_init(pp->pcie_phy);
 
-	if (pp->ops->init2)
-		pp->ops->init2(pp);
 
 	mdelay(100);
 
@@ -1045,23 +883,20 @@ static int pcie_link_init(struct rtd_pcie_port *pp)
 	if (ret)
 		dev_err(pp->dev, "cannot set gpio\n");
 
-	writel(0x00010120, pp->ctrl_base + PORT_LINK_CTRL_OFF);
 	writel(0x001E0022, pp->ctrl_base + PCIE_SYS_CTR);
+	writel(0x00010120, pp->ctrl_base + PORT_LINK_CTRL_OFF);
 
 	timeout = PCIE_CONNECT_TIMEOUT;
 	while (timeout > 0) {
 		mac_stat = get_pcie_mac_stat(pp);
 		if (mac_stat & BIT(11)) {
-			i = 200;
 			ltssm = (mac_stat & GENMASK(9, 4)) >> 4;
-			while((ltssm == 0x11) && i > 0) {
-				udelay(5);
+			if (ltssm == 0x11) {
+				mdelay(1);
 				mac_stat = get_pcie_mac_stat(pp);
 				ltssm = (mac_stat & GENMASK(9, 4)) >> 4;
-				i--;
-			}
-			if (i == 0) {
-				break;
+				if (ltssm == 0x11)
+					break;
 			}
 		}
 		udelay(50);
@@ -1076,7 +911,6 @@ static int pcie_link_init(struct rtd_pcie_port *pp)
 			}
 		}
 		devm_gpiod_put(pp->dev, pp->perst_gpio);
-		phy_exit(pp->pcie_phy);
 		dev_info(pp->dev, "link down with device");
 		return -ENODEV;
 	} else {
@@ -1226,36 +1060,6 @@ failed:
 }
 
 
-void setup_rc(struct rtd_pcie_port *pp)
-{
-	int val;
-
-	writel(readl(pp->ctrl_base + 0x8bc) | BIT(0), pp->ctrl_base + 0x8bc);
-	writel(0x4, pp->ctrl_base + PCI_BASE_ADDRESS_0);
-	writel(0x0, pp->ctrl_base + PCI_BASE_ADDRESS_1);
-
-	val = readl(pp->ctrl_base + PCI_PRIMARY_BUS);
-	val &= 0xff000000;
-	val |= 0x00ff0100;
-	writel(val, pp->ctrl_base + PCI_PRIMARY_BUS);
-
-	val = readl(pp->ctrl_base + PCI_COMMAND);
-	val &= 0xffff0000;
-	val |= PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
-		PCI_COMMAND_MASTER | PCI_COMMAND_SERR;
-	writel(val, pp->ctrl_base + PCI_COMMAND);
-
-	writel(0x0, pp->ctrl_base + PCI_BASE_ADDRESS_0);
-	writew(PCI_CLASS_BRIDGE_PCI, pp->ctrl_base + PCI_CLASS_DEVICE);
-
-	val = readl(pp->ctrl_base + 0x80C);
-	val |= BIT(17);
-	writel(val, pp->ctrl_base + 0x80C);
-
-	val = readl(pp->ctrl_base + 0x8bc);
-	val &= ~BIT(0);
-	writel(val, pp->ctrl_base + 0x8bc);
-}
 
 static int rtd_pcie_probe(struct platform_device *pdev)
 {
@@ -1263,6 +1067,14 @@ static int rtd_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret = 0;
 	struct pci_host_bridge *bridge;
+	static struct pci_bus *bus;
+	struct pci_bus *child;
+	struct pci_dev *pdev_child;
+	u32 linkcap;
+	u16 linkctl;
+	resource_size_t iobase = 0;
+	int aspm = 0;
+	u32 val;
 
 	pp = devm_kzalloc(dev, sizeof(*pp), GFP_KERNEL);
 	if (!pp)
@@ -1287,7 +1099,7 @@ static int rtd_pcie_probe(struct platform_device *pdev)
 	ret = pp->ops->init(pp);
 	if (ret) {
 		dev_err(dev, "init failed.\n");
-		goto deinit;
+		goto failed;
 	}
 
 	ret = pcie_link_init(pp);
@@ -1296,46 +1108,74 @@ static int rtd_pcie_probe(struct platform_device *pdev)
 		goto failed;
 	}
 
-	setup_rc(pp);
-
 	raw_spin_lock_init(&pp->lock);
 
 	if (IS_ENABLED(CONFIG_PCI_MSI)) {
 		ret = pp->ops->msi_ops->msi_init(pp);
 		if (ret) {
 			dev_err(dev, "msi init failed.\n");
-			goto deinit;
+			goto failed;
 		}
 	}
 
 	platform_set_drvdata(pdev, pp);
 
-	bridge = devm_pci_alloc_host_bridge(dev, 0);
+	bridge = pci_alloc_host_bridge(0);
 	if (!bridge) {
 		dev_err(dev, "alloc host bridge failed.\n");
 		ret = -ENOMEM;
-		goto deinit;
+		goto failed;
 	}
 
-	bridge->ops = &rtd_pcie_host_ops;
-	bridge->child_ops = &rtd_pcie_cfg_ops;
-	bridge->sysdata = pp;
-	ret = pci_host_probe(bridge);
+	ret = rtd_pci_get_host_bridge_resources(pp, 1, 0xff, &bridge->windows, &iobase);
 	if (ret) {
-		dev_err(dev, "pcie probe failed\n");
-		goto deinit;
+		dev_err(dev, "get host bridge resources failed.\n");
+		goto failed;
 	}
+
+	ret = devm_request_pci_bus_resources(pp->dev, &bridge->windows);
+	if (ret) {
+		dev_err(dev, "cannot request pci bus resources\n");
+		goto failed;
+	}
+
+	bridge->dev.parent = dev;
+	bridge->sysdata = pp;
+	bridge->ops = &rtd_pcie_cfg_ops;
+	bridge->map_irq = of_irq_parse_and_map_pci;
+	bridge->swizzle_irq = pci_common_swizzle;
+
+	ret = pci_scan_root_bus_bridge(bridge);
+	if (ret) {
+		dev_err(pp->dev, "scan root bus failed\n");
+		goto failed;
+	}
+
+	bus = bridge->bus;
+	pci_bus_size_bridges(bus);
+	pci_bus_assign_resources(bus);
+
+	list_for_each_entry(child, &bus->children, node)
+		pcie_bus_configure_settings(child);
+
+	pci_bus_add_devices(bus);
+
+	/* enable ASPM as the link capabilities and the DT allow */
+	list_for_each_entry(pdev_child, &bus->devices, bus_list) {
+		pcie_capability_read_dword(pdev_child, PCI_EXP_LNKCAP, &linkcap);
+		pcie_capability_read_word(pdev_child, PCI_EXP_LNKCTL, &linkctl);
+		aspm = (linkcap >> 10) & pp->aspm_support & 0x3;
+		pcie_capability_clear_and_set_word(pdev_child, PCI_EXP_LNKCTL,
+						   PCI_EXP_LNKCTL_ASPMC, aspm);
+	}
+
+	val = readl(pp->ctrl_base + LINK_CONTROL_LINK_STATUS_REG);
+	val = (val & ~0x11) | aspm;
+	writel(val, pp->ctrl_base + LINK_CONTROL_LINK_STATUS_REG);
 
 	dev_info(pp->dev, "host driver initial done.\n");
 
 	return ret;
-
-deinit:
-	ret = pp->ops->deinit(pp);
-	if (ret) {
-		dev_err(pp->dev, "deinit failed.\n");
-		return ret;
-	}
 
 failed:
 	dev_info(pp->dev, "host driver initial failed.\n");
@@ -1648,12 +1488,6 @@ static int rtd13xx_pcie1_init(struct rtd_pcie_port *pp)
 		return -EINVAL;
 	}
 
-	ret = check_pipe_clock_ready(pp);
-	if (ret) {
-		dev_err(pp->dev, "cannot get pipe clock\n");
-		return ret;
-	}
-
 	return 0;
 }
 
@@ -1832,12 +1666,6 @@ static int rtd13xx_pcie2_init(struct rtd_pcie_port *pp)
 		return -EINVAL;
 	}
 
-	ret = check_pipe_clock_ready(pp);
-	if (ret) {
-		dev_err(pp->dev, "cannot get pipe clock\n");
-		return ret;
-	}
-
 	return 0;
 }
 
@@ -1921,7 +1749,7 @@ static int get_service_region_setting(struct rtd_pcie_port *pp, u32 *start, u32 
 
 	ret  = of_property_read_u32_index(pp->dev->of_node, "service-region", 0, &start_addr);
 	if (ret) {
-		dev_dbg(pp->dev, "get service region start addr failed");
+		dev_err(pp->dev, "get service region start addr failed");
 		return ret;
 	}
 	ret  = of_property_read_u32_index(pp->dev->of_node, "service-region", 1, &size);
@@ -2002,7 +1830,8 @@ static int rtd16xxb_pcie1_hw_init(struct rtd_pcie_port *pp)
 		return -ENODEV;
 
 	scpu_wrapper_base = syscon_node_to_regmap(syscon_np);
-	if (IS_ERR_OR_NULL(scpu_wrapper_base)) {
+	/* NOTE: checks main2_misc_base, as in the device build */
+	if (IS_ERR_OR_NULL(pp->main2_misc_base)) {
 		of_node_put(syscon_np);
 		return -EINVAL;
 	}
@@ -2023,7 +1852,7 @@ static int rtd16xxb_pcie1_hw_init(struct rtd_pcie_port *pp)
 	regmap_write(scpu_wrapper_base, PCIE1_END, mmio_end);
 	regmap_write(scpu_wrapper_base, PCIE1_CTRL, 0x1);
 	timeout = 500;
-	while (!(regmap_st & 0x1) && timeout > 0) {
+	while (regmap_st != 0x1 && timeout > 0) {
 		regmap_read(scpu_wrapper_base, PCIE1_STAT, &regmap_st);
 		mdelay(1);
 		timeout--;
@@ -2100,446 +1929,6 @@ static int rtd16xxb_pcie2_hw_init(struct rtd_pcie_port *pp)
 	writel(readl(pp->ctrl_base + PCIE_SYS_CTR) | 0x24000000, pp->ctrl_base + PCIE_SYS_CTR);
 	writel(mmio_start, pp->ctrl_base + PCI_BASE_2);
 
-
-	set_pcie_service_region(pp);
-
-	return 0;
-}
-
-static int rtd1625_pcie0_get_res(struct rtd_pcie_port *pp)
-{
-	const u32 *prop;
-	int size = 0;
-
-	pp->ctrl_base = of_iomap(pp->dev->of_node, 0);
-	if (!pp->ctrl_base) {
-		dev_err(pp->dev, "failed to get ctrl address\n");
-		return -EINVAL;
-	}
-
-	prop = of_get_property(pp->dev->of_node, "speed-mode", &size);
-	if (prop)
-		pp->speed_mode = of_read_number(prop, 1);
-	else
-		pp->speed_mode = 0;
-
-	prop = of_get_property(pp->dev->of_node, "debug-mode", &size);
-	if (prop) {
-		pp->debug_mode = of_read_number(prop, 1);
-		if (pp->debug_mode == 0)
-			dev_info(pp->dev, "PCIE Debug Mode off\n");
-		else if (pp->debug_mode == 1)
-			dev_info(pp->dev, "PCIE Debug Mode on\n");
-	} else {
-		pp->debug_mode = 0;
-	}
-
-	prop = of_get_property(pp->dev->of_node, "aspm", &size);
-	if (prop) {
-		pp->aspm_support = of_read_number(prop, 1);
-	} else {
-		pp->aspm_support = 0;
-	}
-
-	pp->perst_gpio = devm_gpiod_get(pp->dev, "perst", GPIOD_OUT_LOW);
-	if (IS_ERR(pp->perst_gpio)) {
-		dev_err(pp->dev, "PERST gpio missing or invalid\n");
-		return PTR_ERR(pp->perst_gpio);
-	}
-
-	pp->device_power_gpio = devm_gpiod_get(pp->dev, "device-power", GPIOD_OUT_LOW);
-	if (IS_ERR(pp->device_power_gpio)) {
-		dev_err(pp->dev, "device power gpio missing or invalid, skipping\n");
-		pp->device_power_gpio = NULL;
-	}
-
-	pp->pcie_clk = devm_clk_get(pp->dev, NULL);
-	if (IS_ERR(pp->pcie_clk)) {
-		dev_err(pp->dev, "pcie clock source missing or invalid\n");
-		return PTR_ERR(pp->pcie_clk);
-	}
-
-	pp->rst_stitch = devm_reset_control_get(pp->dev, "stitch");
-	if (IS_ERR(pp->rst_stitch)) {
-		dev_err(pp->dev, "stitch source missing or invalid\n");
-		return PTR_ERR(pp->rst_stitch);
-	}
-
-	pp->rst = devm_reset_control_get(pp->dev, "rstn");
-	if (IS_ERR(pp->rst)) {
-		dev_err(pp->dev, "rstn_pcie3 source missing or invalid\n");
-		return PTR_ERR(pp->rst);
-	}
-
-	pp->rst_core = devm_reset_control_get(pp->dev, "core");
-	if (IS_ERR(pp->rst_core)) {
-		dev_err(pp->dev, "core source missing or invalid\n");
-		return PTR_ERR(pp->rst_core);
-	}
-
-	pp->rst_power = devm_reset_control_get(pp->dev, "power");
-	if (IS_ERR(pp->rst_power)) {
-		dev_err(pp->dev, "power source missing or invalid\n");
-		return PTR_ERR(pp->rst_power);
-	}
-
-	pp->rst_nonstitch = devm_reset_control_get(pp->dev, "nonstitch");
-	if (IS_ERR(pp->rst_nonstitch)) {
-		dev_err(pp->dev, "nonstitch source missing or invalid\n");
-		return PTR_ERR(pp->rst_nonstitch);
-	}
-
-	pp->pcie_phy = devm_of_phy_get(pp->dev, pp->dev->of_node, NULL);
-	if (IS_ERR(pp->pcie_phy)) {
-		dev_err(pp->dev, "pcie phy missing or invalid\n");
-		return PTR_ERR(pp->pcie_phy);
-	}
-
-	pp->msi_irq = of_irq_get(pp->dev->of_node, 0);
-	if (pp->msi_irq < 0) {
-		dev_err(pp->dev, "parse irq failed\n");
-		return pp->msi_irq;
-	}
-
-	return 0;
-}
-
-static int rtd1625_pcie1_get_res(struct rtd_pcie_port *pp)
-{
-	const u32 *prop;
-	int size = 0;
-
-	pp->ctrl_base = of_iomap(pp->dev->of_node, 0);
-	if (!pp->ctrl_base) {
-		dev_err(pp->dev, "failed to get ctrl address\n");
-		return -EINVAL;
-	}
-
-	prop = of_get_property(pp->dev->of_node, "speed-mode", &size);
-	if (prop)
-		pp->speed_mode = of_read_number(prop, 1);
-	else
-		pp->speed_mode = 0;
-
-	prop = of_get_property(pp->dev->of_node, "debug-mode", &size);
-	if (prop) {
-		pp->debug_mode = of_read_number(prop, 1);
-		if (pp->debug_mode == 0)
-			dev_info(pp->dev, "PCIE Debug Mode off\n");
-		else if (pp->debug_mode == 1)
-			dev_info(pp->dev, "PCIE Debug Mode on\n");
-	} else {
-		pp->debug_mode = 0;
-	}
-
-	prop = of_get_property(pp->dev->of_node, "aspm", &size);
-	if (prop) {
-		pp->aspm_support = of_read_number(prop, 1);
-	} else {
-		pp->aspm_support = 0;
-	}
-
-	pp->perst_gpio = devm_gpiod_get(pp->dev, "perst", GPIOD_OUT_LOW);
-	if (IS_ERR(pp->perst_gpio)) {
-		dev_err(pp->dev, "PERST gpio missing or invalid\n");
-		return PTR_ERR(pp->perst_gpio);
-	}
-
-	pp->pcie_clk = devm_clk_get(pp->dev, NULL);
-	if (IS_ERR(pp->pcie_clk)) {
-		dev_err(pp->dev, "pcie clock source missing or invalid\n");
-		return PTR_ERR(pp->pcie_clk);
-	}
-
-	pp->rst_stitch = devm_reset_control_get(pp->dev, "stitch");
-	if (IS_ERR(pp->rst_stitch)) {
-		dev_err(pp->dev, "stitch source missing or invalid\n");
-		return PTR_ERR(pp->rst_stitch);
-	}
-
-	pp->rst = devm_reset_control_get(pp->dev, "rstn");
-	if (IS_ERR(pp->rst)) {
-		dev_err(pp->dev, "rstn_pcie3 source missing or invalid\n");
-		return PTR_ERR(pp->rst);
-	}
-
-	pp->rst_core = devm_reset_control_get(pp->dev, "core");
-	if (IS_ERR(pp->rst_core)) {
-		dev_err(pp->dev, "core source missing or invalid\n");
-		return PTR_ERR(pp->rst_core);
-	}
-
-	pp->rst_power = devm_reset_control_get(pp->dev, "power");
-	if (IS_ERR(pp->rst_power)) {
-		dev_err(pp->dev, "power source missing or invalid\n");
-		return PTR_ERR(pp->rst_power);
-	}
-
-	pp->rst_nonstitch = devm_reset_control_get(pp->dev, "nonstitch");
-	if (IS_ERR(pp->rst_nonstitch)) {
-		dev_err(pp->dev, "nonstitch source missing or invalid\n");
-		return PTR_ERR(pp->rst_nonstitch);
-	}
-
-	pp->pcie_phy = devm_of_phy_get(pp->dev, pp->dev->of_node, NULL);
-	if (IS_ERR(pp->pcie_phy)) {
-		dev_err(pp->dev, "pcie phy missing or invalid\n");
-		return PTR_ERR(pp->pcie_phy);
-	}
-
-	pp->msi_irq = of_irq_get(pp->dev->of_node, 0);
-	if (pp->msi_irq < 0) {
-		dev_err(pp->dev, "parse irq failed\n");
-		return pp->msi_irq;
-	}
-
-	pp->device_power_supply = devm_regulator_get_optional(pp->dev, "device-power");
-	if (IS_ERR(pp->device_power_supply)) {
-		if (PTR_ERR(pp->device_power_supply) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		pp->device_power_supply = NULL;
-	}
-
-	return 0;
-}
-
-static int rtd1625_pcie0_powercut(struct rtd_pcie_port *pp, int power)
-{
-	struct device_node *syscon_np;
-	struct regmap *iso_base;
-
-	syscon_np = of_parse_phandle(pp->dev->of_node, "syscon-iso", 0);
-	if (IS_ERR_OR_NULL(syscon_np))
-		return -ENODEV;
-
-	iso_base = syscon_node_to_regmap(syscon_np);
-	if (IS_ERR_OR_NULL(iso_base)) {
-		of_node_put(syscon_np);
-		return -EINVAL;
-	}
-
-	if (power)
-		regmap_update_bits(iso_base, ISO_POWERCUT, PCIE0_POWERCUT_BIT, PCIE0_POWERCUT_BIT);
-	else
-		regmap_update_bits(iso_base, ISO_POWERCUT, PCIE0_POWERCUT_BIT, 0);
-
-	return 0;
-
-}
-
-static int rtd1625_pcie0_init(struct rtd_pcie_port *pp)
-{
-	int ret = 0;
-
-	ret = rtd1625_pcie0_powercut(pp, 1);
-	if (ret) {
-		dev_err(pp->dev, "failed to power on pcie0\n");
-		return ret;
-	}
-
-	if (pp->device_power_gpio)
-		gpiod_direction_output(pp->device_power_gpio, 1);
-
-	reset_control_deassert(pp->rst);
-	phy_power_on(pp->pcie_phy);
-
-	ret = clk_prepare_enable(pp->pcie_clk);
-
-	if (ret) {
-		dev_err(pp->dev, "unable to enable pcie clock\n");
-		clk_disable_unprepare(pp->pcie_clk);
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static int rtd1625_pcie0_init2(struct rtd_pcie_port *pp)
-{
-	const struct soc_device_attribute rtk_soc_kent_a00[] = {
-		{ .family = "Realtek Kent", .revision = "A00",},
-		{ /* empty */ } };
-
-	reset_control_deassert(pp->rst_stitch);
-	reset_control_deassert(pp->rst_core);
-	reset_control_deassert(pp->rst_power);
-	reset_control_deassert(pp->rst_nonstitch);
-
-	if (soc_device_match(rtk_soc_kent_a00)) {
-		writel(0x420, pp->ctrl_base + PCIE_PWR_CTR);
-	} else {
-		writel(0x20, pp->ctrl_base + PCIE_PWR_CTR);
-		writel(0x1, pp->ctrl_base + PCIE_PIPE_CTL0);
-	}
-
-	//writel(0x7474, pp->ctrl_base + 0x170);
-	writel(0x060007A4, pp->ctrl_base + 0x8f8);
-	writel(0x0E666060, pp->ctrl_base + 0x8fc);
-
-	return 0;
-}
-
-static int rtd1625_pcie0_deinit(struct rtd_pcie_port *pp)
-{
-	int ret = 0;
-
-	clk_disable_unprepare(pp->pcie_clk);
-	reset_control_assert(pp->rst_stitch);
-	reset_control_assert(pp->rst);
-	reset_control_assert(pp->rst_core);
-	reset_control_assert(pp->rst_power);
-	reset_control_assert(pp->rst_nonstitch);
-	phy_power_off(pp->pcie_phy);
-
-	if (pp->device_power_gpio) {
-		gpiod_direction_output(pp->device_power_gpio, 0);
-	}
-
-	ret = rtd1625_pcie0_powercut(pp, 0);
-	if (ret)
-		dev_err(pp->dev, "failed to power off pcie0\n");
-
-	return ret;
-}
-
-static int rtd1625_pcie1_powercut(struct rtd_pcie_port *pp, int power)
-{
-	struct device_node *syscon_np;
-	struct regmap *iso_base;
-
-	syscon_np = of_parse_phandle(pp->dev->of_node, "syscon-iso", 0);
-	if (IS_ERR_OR_NULL(syscon_np))
-		return -ENODEV;
-
-	iso_base = syscon_node_to_regmap(syscon_np);
-	if (IS_ERR_OR_NULL(iso_base)) {
-		of_node_put(syscon_np);
-		return -EINVAL;
-	}
-
-	if (power) {
-		regmap_update_bits(iso_base, ISO_POWERCUT, PCIE1_POWERCUT_BIT, PCIE1_POWERCUT_BIT);
-		regmap_write(iso_base, ISO_PCIE_CTRL, 0x3e);
-	} else {
-		regmap_update_bits(iso_base, ISO_POWERCUT, PCIE1_POWERCUT_BIT, 0);
-		regmap_write(iso_base, ISO_PCIE_CTRL, 0x1);
-	}
-	return 0;
-
-}
-
-static int rtd1625_pcie1_init(struct rtd_pcie_port *pp)
-{
-	int ret = 0;
-
-	ret = rtd1625_pcie1_powercut(pp, 1);
-	if (ret) {
-		dev_err(pp->dev, "failed to power on pcie1\n");
-		return ret;
-	}
-
-	if (pp->device_power_supply) {
-		ret = regulator_enable(pp->device_power_supply);
-		if (ret)
-			dev_err(pp->dev, "failed to enable PCIe device 3.3V via regulator");
-	}
-
-	reset_control_deassert(pp->rst_stitch);
-	reset_control_deassert(pp->rst);
-	reset_control_deassert(pp->rst_core);
-	reset_control_deassert(pp->rst_power);
-	reset_control_deassert(pp->rst_nonstitch);
-	phy_power_on(pp->pcie_phy);
-
-	ret = clk_prepare_enable(pp->pcie_clk);
-
-	if (ret) {
-		dev_err(pp->dev, "unable to enable pcie clock\n");
-		clk_disable_unprepare(pp->pcie_clk);
-		return -EINVAL;
-	}
-
-	writel(0x0020, pp->ctrl_base + PCIE_PWR_CTR);
-
-	return 0;
-}
-
-static int rtd1625_pcie1_deinit(struct rtd_pcie_port *pp)
-{
-	int ret = 0;
-
-	clk_disable_unprepare(pp->pcie_clk);
-	reset_control_assert(pp->rst_stitch);
-	reset_control_assert(pp->rst);
-	reset_control_assert(pp->rst_core);
-	reset_control_assert(pp->rst_power);
-	reset_control_assert(pp->rst_nonstitch);
-	phy_power_off(pp->pcie_phy);
-
-	if (pp->device_power_supply) {
-		ret = regulator_disable(pp->device_power_supply);
-		if (ret)
-			dev_err(pp->dev, "failed to disable PCIe device 3.3V via regulator");
-	}
-
-	ret = rtd1625_pcie1_powercut(pp, 0);
-	if (ret)
-		dev_err(pp->dev, "failed to power off pcie1\n");
-
-	return ret;
-}
-
-static int rtd1625_pcie0_hw_init(struct rtd_pcie_port *pp)
-{
-	struct device_node *syscon_np;
-	struct regmap *scpu_wrapper_base;
-	u32 regmap_st = 0;
-	int timeout;
-	int err;
-	struct of_pci_range range;
-	struct of_pci_range_parser parser;
-	u32 mmio_start, mmio_end;
-
-	syscon_np = of_parse_phandle(pp->dev->of_node, "syscon-scpu-wrapper", 0);
-	if (IS_ERR_OR_NULL(syscon_np))
-		return -ENODEV;
-
-	scpu_wrapper_base = syscon_node_to_regmap(syscon_np);
-	if (IS_ERR_OR_NULL(scpu_wrapper_base)) {
-		of_node_put(syscon_np);
-		return -EINVAL;
-	}
-
-	err = of_pci_range_parser_init(&parser, pp->dev->of_node);
-	if (err) {
-		dev_err(pp->dev, "parsing range failed\n");
-		return err;
-	}
-	for_each_of_pci_range(&parser, &range) {
-		if ((range.flags & IORESOURCE_TYPE_BITS) == IORESOURCE_MEM) {
-			mmio_start = range.cpu_addr;
-			mmio_end = range.cpu_addr + range.size - 1;
-		}
-	}
-
-	regmap_write(scpu_wrapper_base, PCIE0_START, mmio_start);
-	regmap_write(scpu_wrapper_base, PCIE0_END, mmio_end);
-	regmap_write(scpu_wrapper_base, PCIE0_CTRL, 0x1);
-	timeout = 500;
-	while (regmap_st != 0x1 && timeout > 0) {
-		regmap_read(scpu_wrapper_base, PCIE0_STAT, &regmap_st);
-		mdelay(1);
-		timeout--;
-	}
-	if (timeout == 0) {
-		dev_err(pp->dev, "failed to set mmio start/end\n");
-		return -EINVAL;
-	}
-
-	writel(mmio_start, pp->ctrl_base + PCIE_DDR_START);
-	writel(mmio_end, pp->ctrl_base + PCIE_DDR_END);
-	writel(readl(pp->ctrl_base + PCIE_SYS_CTR) | 0x24000000, pp->ctrl_base + PCIE_SYS_CTR);
-	writel(mmio_start, pp->ctrl_base + PCI_BASE_2);
 
 	set_pcie_service_region(pp);
 
@@ -2627,7 +2016,7 @@ static const struct rtd_msi_ops rtd_wrapper_msi_ops = {
 };
 
 static const struct rtd_msi_ops rtd_mac_msi_ops = {
-	.msi_init = rtd_pcie_irq_init,
+	.msi_init = rtd_pcie_mac_msi_init,
 	.msi_host_init = rtd_pcie_mac_msi_host_init,
 	.irq_handle = rtd_handle_mac_msi_irq,
 };
@@ -2687,27 +2076,6 @@ static const struct rtd_pcie_ops rtd13xxd_pcie1_ops = {
 	.get_ca_type = rtd_get_ca_type,
 };
 
-static const struct rtd_pcie_ops rtd1625_pcie0_ops = {
-	.name = "pcie0",
-	.msi_ops = &rtd_mac_msi_ops,
-	.get_resource = rtd1625_pcie0_get_res,
-	.init = rtd1625_pcie0_init,
-	.init2 = rtd1625_pcie0_init2,
-	.deinit = rtd1625_pcie0_deinit,
-	.hwinit = rtd1625_pcie0_hw_init,
-	.get_ca_type = rtd_get_ca_type,
-};
-
-static const struct rtd_pcie_ops rtd1625_pcie1_ops = {
-	.name = "pcie1",
-	.msi_ops = &rtd_mac_msi_ops,
-	.get_resource = rtd1625_pcie1_get_res,
-	.init = rtd1625_pcie1_init,
-	.deinit = rtd1625_pcie1_deinit,
-	.hwinit = rtd16xxb_pcie1_hw_init,
-	.get_ca_type = rtd_get_ca_type,
-};
-
 static const struct of_device_id rtd_pcie_match_table[] = {
 	{.compatible = "realtek,rtd13xx-pcie-slot0", .data = &rtd13xx_pcie0_ops},
 	{.compatible = "realtek,rtd13xx-pcie-slot1", .data = &rtd13xx_pcie1_ops},
@@ -2715,8 +2083,6 @@ static const struct of_device_id rtd_pcie_match_table[] = {
 	{.compatible = "realtek,rtd16xxb-pcie-slot1", .data = &rtd16xxb_pcie1_ops},
 	{.compatible = "realtek,rtd16xxb-pcie-slot2", .data = &rtd16xxb_pcie2_ops},
 	{.compatible = "realtek,rtd13xxd-pcie-slot1", .data = &rtd13xxd_pcie1_ops},
-	{.compatible = "realtek,rtd1625-pcie-slot0", .data = &rtd1625_pcie0_ops},
-	{.compatible = "realtek,rtd1625-pcie-slot1", .data = &rtd1625_pcie1_ops},
 	{},
 };
 
@@ -2755,7 +2121,6 @@ static int rtd_pcie_suspend(struct device *dev)
 	if (ret)
 		dev_err(pp->dev, "cannot set gpio\n");
 
-	phy_exit(pp->pcie_phy);
 	ret = pp->ops->deinit(pp);
 	if (ret) {
 		dev_err(dev, "deinit failed.\n");
@@ -2781,6 +2146,10 @@ static int rtd_pcie_resume(struct device *dev)
 		return ret;
 	}
 
+	ret = gpiod_direction_output(pp->perst_gpio, 1);
+	if (ret)
+		dev_err(pp->dev, "cannot set gpio\n");
+
 	ret = pcie_link_init(pp);
 	if (ret) {
 		dev_err(dev, "link init failed.\n");
@@ -2800,43 +2169,16 @@ static void rtd_pcie_shutdown(struct platform_device *pdev)
 	struct rtd_pcie_port *pp = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
 	int ret = 0;
-	int timeout = 0;
 
 	dev_info(dev, "shutdown enter ...\n");
-
-	dev_info(dev, "try to enter L2 [current ltssm:0x%x]\n", (readl(pp->ctrl_base + PCIE_MAC_ST) &
-		LTSSM_STATE_MASK) >> 4);
-
-	dev_info(dev, "send PME_TURN_OFF\n");
-	writel(0x40, pp->ctrl_base + PCIE_PWR_CTR);
-	writel(0x0, pp->ctrl_base + PCIE_PWR_CTR);
-
-	timeout = 1000;
-	while(timeout) {
-		if (readl(pp->ctrl_base + PCIE_PME_ST) & 0x1) {
-			writel(0x1, pp->ctrl_base + PCIE_PME_ST);
-			break;
-		}
-		udelay(10);
-		timeout--;
-	}
-	if (timeout == 0) {
-		dev_info(dev, "PME_TURN_OFF NO ACK\n");
-	} else {
-		dev_info(dev, "receive PME_TO_ACK [current ltssm:0x%x]\n",
-			(readl(pp->ctrl_base + PCIE_MAC_ST) & LTSSM_STATE_MASK) >> 4);
-	}
 
 	ret = gpiod_direction_output(pp->perst_gpio, 0);
 	if (ret)
 		dev_err(pp->dev, "cannot set gpio\n");
 
-	phy_exit(pp->pcie_phy);
 	ret = pp->ops->deinit(pp);
-	if (ret) {
+	if (ret)
 		dev_err(dev, "deinit failed.\n");
-		return;
-	}
 
 	dev_info(&pdev->dev, "shutdown exit ...\n");
 }
