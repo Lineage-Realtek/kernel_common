@@ -51,7 +51,6 @@ struct rtd_pin_config_desc {
 	unsigned int smt_offset;
 	unsigned int power_offset;
 	unsigned int curr_type;
-	unsigned int input_volt_offset;
 };
 
 struct rtd_pin_sconfig_desc {
@@ -71,16 +70,6 @@ struct rtd_pin_vol_detect_desc {
 	unsigned int en_offset;
 	unsigned int status_offset;
 	char **pins;
-};
-
-struct rtd_reg_range {
-	unsigned int offset;
-	size_t len;
-};
-
-struct rtd_pin_range {
-	const struct rtd_reg_range *ranges;
-	const int num_ranges;
 };
 
 struct rtd_pin_desc {
@@ -119,21 +108,6 @@ struct rtd_pin_reg_list {
 		.curr_offset = _curr_off, \
 		.smt_offset = _smt_off, \
 		.power_offset = _pow_off, \
-		.curr_type = _curr_type, \
-	}
-
-#define RTK_PIN_CONFIG_V2(_name, _reg_off, _base_bit, _pud_en_off, \
-			  _pud_sel_off, _curr_off, _smt_off, _pow_off, _input_volt_off, _curr_type) \
-	{ \
-		.name = # _name, \
-		.reg_offset = _reg_off, \
-		.base_bit = _base_bit, \
-		.pud_en_offset = _pud_en_off, \
-		.pud_sel_offset = _pud_sel_off, \
-		.curr_offset = _curr_off, \
-		.smt_offset = _smt_off, \
-		.power_offset = _pow_off, \
-		.input_volt_offset = _input_volt_off, \
 		.curr_type = _curr_type, \
 	}
 
@@ -185,9 +159,6 @@ struct rtd_pinctrl_desc {
 	unsigned int num_regs;
 	const struct rtd_pin_vol_detect_desc *vol_pins;
 	unsigned int num_vol_pins;
-	const char *gpio_func_name;
-	unsigned int need_restore;
-	const struct rtd_pin_range *pin_range;
 };
 
 #define PCONF_UNSUPP 0xffffffff
@@ -199,7 +170,6 @@ struct rtd_pinctrl_desc {
 #include "pinctrl-rtd1319d.h"
 #include "pinctrl-rtd1315e.h"
 #include "pinctrl-rtd1295.h"
-#include "pinctrl-rtd1625.h"
 
 
 struct rtd_pinctrl {
@@ -207,21 +177,24 @@ struct rtd_pinctrl {
 	void __iomem *base;
 	struct pinctrl_desc desc;
 	const struct rtd_pinctrl_desc *info;
-	u32 **save_regs;
 };
 
 /* custom pinconf parameters */
 #define RTD_P_DRIVE (PIN_CONFIG_END + 1)
 #define RTD_N_DRIVE (PIN_CONFIG_END + 2)
 #define RTD_D_CYCLE (PIN_CONFIG_END + 3)
-#define RTD_INPUT_VOLT (PIN_CONFIG_END + 4)
 
 
 static const struct pinconf_generic_params rtd_custom_bindings[] = {
 	{"realtek,pdrive", RTD_P_DRIVE, 0},
 	{"realtek,ndrive", RTD_N_DRIVE, 0},
 	{"realtek,dcycle", RTD_D_CYCLE, 0},
-	{"realtek,input_volt", RTD_INPUT_VOLT, 0},
+};
+
+static const struct pin_config_item rtd_custom_conf_items[] = {
+	PCONFDUMP(RTD_P_DRIVE, "pdrive", NULL, true),
+	PCONFDUMP(RTD_N_DRIVE, "ndrive", NULL, true),
+	PCONFDUMP(RTD_D_CYCLE, "dcycle", NULL, true),
 };
 
 static int rtd_pinctrl_get_groups_count(struct pinctrl_dev *pcdev)
@@ -394,11 +367,6 @@ static int rtd_pinctrl_set_mux(struct pinctrl_dev *pcdev,
 static int rtd_pinctrl_gpio_request_enable(struct pinctrl_dev *pcdev,
 	struct pinctrl_gpio_range *range, unsigned int offset)
 {
-	struct rtd_pinctrl *data = pinctrl_dev_get_drvdata(pcdev);
-
-	if (data->info->gpio_func_name)
-		return rtd_pinctrl_set_one_mux(pcdev, offset, data->info->gpio_func_name);
-
 	return rtd_pinctrl_set_one_mux(pcdev, offset, "gpio");
 }
 
@@ -476,7 +444,7 @@ static int rtd_pconf_parse_conf(struct rtd_pinctrl *data,
 	u32 val;
 	u32 mask;
 	u32 pulsel_off, pulen_off, smt_off, curr_off, pow_off, reg_off,
-		p_off, n_off, input_volt_off;
+		p_off, n_off;
 	const struct rtd_pin_config_desc *config_desc;
 	const struct rtd_pin_sconfig_desc *sconfig_desc;
 
@@ -599,20 +567,6 @@ static int rtd_pconf_parse_conf(struct rtd_pinctrl *data,
 			val &= ~BIT(pow_off);
 		writel(val, data->base + reg_off);
 		break;
-	case RTD_INPUT_VOLT:
-		if (config_desc->input_volt_offset == PCONF_UNSUPP) {
-			pr_err("[rtd_pinctrl][%s] not support input voltage level\n", config_desc->name);
-			return -ENOTSUPP;
-		}
-		input_volt_off = config_desc->base_bit + config_desc->input_volt_offset;
-		set_val = arg;
-		val = readl(data->base + config_desc->reg_offset);
-		if (set_val)
-			val |= BIT(input_volt_off);
-		else
-			val &= ~BIT(input_volt_off);
-		writel(val, data->base + config_desc->reg_offset);
-		break;
 	case RTD_P_DRIVE:
 		sconfig_desc = rtd_pinctrl_find_sconfig(data, pinnr);
 		if (!sconfig_desc)
@@ -671,7 +625,137 @@ static int rtd_pconf_parse_conf(struct rtd_pinctrl *data,
 static int rtd_pin_config_get(struct pinctrl_dev *pcdev, unsigned int pinnr,
 		unsigned long *config)
 {
-	return -ENOTSUPP;
+	struct rtd_pinctrl *data = pinctrl_dev_get_drvdata(pcdev);
+	unsigned int param = pinconf_to_config_param(*config);
+	unsigned int arg = 0;
+	unsigned int shift;
+	unsigned int mask;
+	unsigned int val;
+	const struct rtd_pin_config_desc *config_desc;
+	const struct rtd_pin_sconfig_desc *sconfig_desc;
+
+	config_desc = rtd_pinctrl_find_config(data, pinnr);
+	if (!config_desc)
+		return -ENOTSUPP;
+
+	switch (param) {
+	case PIN_CONFIG_INPUT_SCHMITT_ENABLE:
+		if (config_desc->smt_offset == PCONF_UNSUPP)
+			return -ENOTSUPP;
+
+		shift = config_desc->base_bit + config_desc->smt_offset;
+		val = readl(data->base + config_desc->reg_offset);
+		arg = (val >> shift) & 1;
+		if (!arg)
+			return -EINVAL;
+		break;
+
+	case PIN_CONFIG_BIAS_DISABLE:
+		if (config_desc->pud_en_offset == PCONF_UNSUPP)
+			return -ENOTSUPP;
+
+		shift = config_desc->base_bit + config_desc->pud_en_offset;
+		val = readl(data->base + config_desc->reg_offset);
+		arg = (val >> shift) & 1;
+		if (arg != 0)
+			return -EINVAL;
+		break;
+
+	case PIN_CONFIG_BIAS_PULL_UP:
+	case PIN_CONFIG_BIAS_PULL_DOWN:
+		if (config_desc->pud_en_offset == PCONF_UNSUPP)
+			return -ENOTSUPP;
+
+		val = readl(data->base + config_desc->reg_offset);
+		shift = config_desc->base_bit + config_desc->pud_en_offset;
+		arg = (val >> shift) & 1;
+		if (!arg)
+			return -EINVAL;
+
+		shift = config_desc->base_bit + config_desc->pud_sel_offset;
+		arg = (val >> shift) & 1;
+		if (param == PIN_CONFIG_BIAS_PULL_UP && arg == 0)
+			return -EINVAL;
+		if (param == PIN_CONFIG_BIAS_PULL_DOWN && arg != 0)
+			return -EINVAL;
+		arg = 0;
+		break;
+
+	case PIN_CONFIG_DRIVE_STRENGTH:
+		shift = config_desc->base_bit + config_desc->curr_offset;
+		val = readl(data->base + config_desc->reg_offset);
+		arg = (val >> shift) & 1;
+
+		switch (config_desc->curr_type) {
+		case PADDRI_4_8:
+			arg = arg == 1 ? 8 : 4;
+			break;
+
+		case PADDRI_2_4:
+			arg = arg == 1 ? 4 : 2;
+			break;
+
+		case PCONF_UNSUPP:
+			return -ENOTSUPP;
+
+		default:
+			return -EINVAL;
+		}
+		break;
+
+	case PIN_CONFIG_POWER_SOURCE:
+		if (config_desc->power_offset == PCONF_UNSUPP)
+			return -ENOTSUPP;
+
+		shift = config_desc->base_bit + config_desc->power_offset;
+		val = readl(data->base + config_desc->reg_offset + (shift >= 32 ? 4 : 0));
+		shift %= 32;
+		arg = (val >> shift) & 1;
+		break;
+
+	case RTD_P_DRIVE:
+		sconfig_desc = rtd_pinctrl_find_sconfig(data, pinnr);
+		if (!sconfig_desc)
+			return -ENOTSUPP;
+
+		shift = sconfig_desc->pdrive_offset;
+		val = readl(data->base + sconfig_desc->reg_offset + (shift >= 32 ? 4 : 0));
+		shift %= 32;
+
+		mask = GENMASK(shift + sconfig_desc->pdrive_maskbits - 1, shift);
+		arg = (val & mask) >> shift;
+		break;
+
+	case RTD_N_DRIVE:
+		sconfig_desc = rtd_pinctrl_find_sconfig(data, pinnr);
+		if (!sconfig_desc)
+			return -ENOTSUPP;
+
+		shift = sconfig_desc->ndrive_offset;
+		val = readl(data->base + sconfig_desc->reg_offset + (shift >= 32 ? 4 : 0));
+		shift %= 32;
+
+		mask = GENMASK(shift + sconfig_desc->ndrive_maskbits - 1, shift);
+		arg = (val & mask) >> shift;
+		break;
+
+	case RTD_D_CYCLE:
+		sconfig_desc = rtd_pinctrl_find_sconfig(data, pinnr);
+		if (!sconfig_desc)
+			return -ENOTSUPP;
+
+		shift = sconfig_desc->dcycle_offset;
+		val = readl(data->base + sconfig_desc->reg_offset);
+		mask = GENMASK(shift + sconfig_desc->dcycle_maskbits - 1, shift);
+		arg = (val & mask) >> shift;
+		break;
+
+	default:
+		return -ENOTSUPP;
+	}
+
+	*config = pinconf_to_config_packed(param, arg);
+	return 0;
 }
 
 static int rtd_pin_config_set(struct pinctrl_dev *pcdev, unsigned int pinnr,
@@ -771,31 +855,6 @@ static void detect_vol_config_set(struct rtd_pinctrl *data)
 	}
 }
 
-static int save_reg_init(struct rtd_pinctrl *data)
-{
-	const struct rtd_pin_range *pin_range = data->info->pin_range;
-	struct device *dev = data->pcdev->dev;
-	const struct rtd_reg_range *range;
-	size_t num_entries;
-	int i;
-
-	data->save_regs = devm_kcalloc(dev, pin_range->num_ranges, sizeof(u32 *), GFP_KERNEL);
-
-	if (!data->save_regs)
-		return -ENOMEM;
-
-	for (i = 0; i < pin_range->num_ranges; i++) {
-		range = &pin_range->ranges[i];
-		num_entries = range->len;
-
-		data->save_regs[i] = devm_kzalloc(dev, num_entries * sizeof(u32), GFP_KERNEL);
-		if (!data->save_regs[i])
-			return -ENOMEM;
-	}
-
-	return 0;
-}
-
 #ifdef CONFIG_PINCTRL_RTD_SELFTEST
 static void rtd_pinctrl_selftest(struct rtd_pinctrl *data)
 {
@@ -889,10 +948,6 @@ static const struct of_device_id rtd_pinctrl_dt_ids[] = {
 	{ .compatible = "realtek,rtd1295-sb2-pinctrl", .data = &rtd1295_sb2_pinctrl_desc },
 	{ .compatible = "realtek,rtd1295-disp-pinctrl", .data = &rtd1295_disp_pinctrl_desc },
 	{ .compatible = "realtek,rtd1295-cr-pinctrl", .data = &rtd1295_cr_pinctrl_desc },
-	{ .compatible = "realtek,rtd1625-iso-pinctrl", .data = &rtd1625_iso_pinctrl_desc },
-	{ .compatible = "realtek,rtd1625-isom-pinctrl", .data = &rtd1625_isom_pinctrl_desc },
-	{ .compatible = "realtek,rtd1625-ve4-pinctrl", .data = &rtd1625_ve4_pinctrl_desc },
-	{ .compatible = "realtek,rtd1625-main2-pinctrl", .data = &rtd1625_main2_pinctrl_desc },
 	{}
 };
 
@@ -900,7 +955,6 @@ static int rtd_pinctrl_probe(struct platform_device *pdev)
 {
 	struct rtd_pinctrl *data;
 	const struct of_device_id *match;
-	int ret;
 
 	match = of_match_node(rtd_pinctrl_dt_ids, pdev->dev.of_node);
 	if (!match)
@@ -922,6 +976,7 @@ static int rtd_pinctrl_probe(struct platform_device *pdev)
 	data->desc.pmxops = &rtd_pinmux_ops;
 	data->desc.confops = &rtd_pinconf_ops;
 	data->desc.custom_params = rtd_custom_bindings;
+	data->desc.custom_conf_items = rtd_custom_conf_items;
 	data->desc.num_custom_params = ARRAY_SIZE(rtd_custom_bindings);
 	data->desc.owner = THIS_MODULE;
 
@@ -934,13 +989,6 @@ static int rtd_pinctrl_probe(struct platform_device *pdev)
 	if (data->info->vol_pins)
 		detect_vol_config_set(data);
 
-	if (data->info->need_restore) {
-		ret = save_reg_init(data);
-		if (ret) {
-			dev_err(&pdev->dev, "Failed to allocate backup buffer\n");
-			return ret;
-		}
-	}
 #ifdef CONFIG_PINCTRL_RTD_SELFTEST
 	rtd_pinctrl_selftest(data);
 #endif
@@ -949,66 +997,11 @@ static int rtd_pinctrl_probe(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int realtek_pinctrl_suspend(struct device *dev)
-{
-	struct rtd_pinctrl *data = dev_get_drvdata(dev);
-	const struct rtd_pin_range *pin_range = data->info->pin_range;
-	const struct rtd_reg_range *range;
-	u32 *save_reg;
-	int i;
-	int j;
-
-	if (!data->info->need_restore)
-		return 0;
-
-	for (i = 0; i < pin_range->num_ranges; i++) {
-		range = &pin_range->ranges[i];
-		save_reg = data->save_regs[i];
-
-		for (j = 0; j < range->len; j = j + 0x4) {
-			save_reg[j] = readl(data->base + range->offset + j);
-		}
-	}
-
-	return 0;
-}
-
-static int realtek_pinctrl_resume(struct device *dev)
-{
-	struct rtd_pinctrl *data = dev_get_drvdata(dev);
-	const struct rtd_pin_range *pin_range = data->info->pin_range;
-	const struct rtd_reg_range *range;
-	u32 *save_reg;
-	int i;
-	int j;
-
-	if (!data->info->need_restore)
-		return 0;
-
-	for (i = 0; i < pin_range->num_ranges; i++) {
-		range = &pin_range->ranges[i];
-		save_reg = data->save_regs[i];
-
-		for (j = 0; j < range->len; j = j + 0x4) {
-			writel(save_reg[j], data->base + range->offset + j);
-		}
-	}
-
-	return 0;
-}
-#endif
-
-static const struct dev_pm_ops realtek_pinctrl_pm_ops = {
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(realtek_pinctrl_suspend, realtek_pinctrl_resume)
-};
-
 static struct platform_driver rtd_pinctrl_driver = {
 	.probe = rtd_pinctrl_probe,
 	.driver = {
 		.name = "rtd-pinctrl",
 		.of_match_table	= rtd_pinctrl_dt_ids,
-		.pm = &realtek_pinctrl_pm_ops,
 	},
 };
 
