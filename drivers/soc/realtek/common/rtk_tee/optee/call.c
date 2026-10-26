@@ -337,12 +337,6 @@ int optee_close_session(struct tee_context *ctx, u32 session)
 		return -EINVAL;
 	kfree(sess);
 
-#ifdef CONFIG_OPTEE_ACL_API
-	if (optee_acl_is_enabled()) {
-		optee_acl_active_delete(session);
-	}
-#endif
-
 	shm = get_msg_arg(ctx, 0, &msg_arg, &msg_parg);
 	if (IS_ERR(shm))
 		return PTR_ERR(shm);
@@ -350,6 +344,12 @@ int optee_close_session(struct tee_context *ctx, u32 session)
 	msg_arg->cmd = OPTEE_MSG_CMD_CLOSE_SESSION;
 	msg_arg->session = session;
 	optee_do_call_with_arg(ctx, msg_parg);
+
+#ifdef CONFIG_OPTEE_ACL_API
+	if (optee_acl_is_enabled()) {
+		optee_acl_active_delete(session);
+	}
+#endif
 
 	tee_shm_free(shm);
 	return 0;

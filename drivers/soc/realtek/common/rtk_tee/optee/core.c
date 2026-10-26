@@ -305,12 +305,12 @@ static void optee_release(struct tee_context *ctx)
 			arg->cmd = OPTEE_MSG_CMD_CLOSE_SESSION;
 			arg->session = sess->session_id;
 			optee_do_call_with_arg(ctx, parg);
-		}
 #ifdef CONFIG_OPTEE_ACL_API
-		if (optee_acl_is_enabled()) {
-			optee_acl_active_delete(sess->session_id);
-		}
+			if (optee_acl_is_enabled()) {
+				optee_acl_active_delete(sess->session_id);
+			}
 #endif
+		}
 		kfree(sess);
 	}
 	kfree(ctxdata);
@@ -759,7 +759,7 @@ static int optee_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_OPTEE_ACL_API
 	if (optee_acl_register(&pdev->dev)) {
-		dev_err(&pdev->dev, "Fail to register optee_acl\n");
+		dev_err(&pdev->dev, "Fail to register optee_acl");
 		optee_remove(pdev);
 		return -EFAULT;
 	}
