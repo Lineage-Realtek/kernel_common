@@ -722,12 +722,10 @@ static int rtd_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 
 	switch (type & IRQ_TYPE_SENSE_MASK) {
 	case IRQ_TYPE_EDGE_RISING:
-	case IRQ_TYPE_LEVEL_HIGH:
 		polarity = 1;
 		break;
 
 	case IRQ_TYPE_EDGE_FALLING:
-	case IRQ_TYPE_LEVEL_LOW:
 		polarity = 0;
 		break;
 
@@ -809,6 +807,7 @@ static int rtd_gpio_probe(struct platform_device *pdev)
 	}
 	data->gpio_chip.parent = &pdev->dev;
 	data->gpio_chip.label = dev_name(&pdev->dev);
+	data->gpio_chip.of_node = pdev->dev.of_node;
 	data->gpio_chip.of_gpio_n_cells = 2;
 	data->gpio_chip.base = data->info->gpio_base;
 	data->gpio_chip.ngpio = data->info->num_gpios;
