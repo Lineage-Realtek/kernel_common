@@ -37,7 +37,6 @@ struct realtek_irq_mux_info {
 	unsigned int isr_offset;
 	unsigned int umsk_isr_offset;
 	unsigned int scpu_int_en_offset;
-	bool scpu_int_en_we;
 	const u32 *isr_to_scpu_int_en_mask;
 	const struct realtek_irq_mux_subset_cfg *cfg;
 	int cfg_num;
@@ -61,7 +60,6 @@ struct realtek_irq_mux_data {
 	const struct realtek_irq_mux_info *info;
 	struct irq_domain *domain;
 	spinlock_t lock;
-	unsigned int saved_en;
 	int subset_data_num;
 	struct realtek_irq_mux_subset_data subset_data[0];
 };
@@ -142,7 +140,6 @@ static void realtek_mux_enable_irq(struct irq_data *data)
 	struct realtek_irq_mux_data *mux_data = irq_data_get_irq_chip_data(data);
 	unsigned long flags;
 	u32 scpu_int_en, mask;
-	bool write_enable = mux_data->info->scpu_int_en_we;
 
 	mask = mux_data->info->isr_to_scpu_int_en_mask[data->hwirq];
 	if (!mask || mask == RTK_MUX_IRQ_ALWAYS_ENABLED)
@@ -150,12 +147,8 @@ static void realtek_mux_enable_irq(struct irq_data *data)
 
 	spin_lock_irqsave(&mux_data->lock, flags);
 
-	if (write_enable == true)
-		scpu_int_en = mask | (mask << 1);
-	else {
-		regmap_read(mux_data->base, mux_data->info->scpu_int_en_offset, &scpu_int_en);
-		scpu_int_en |= mask;
-	}
+	regmap_read(mux_data->base, mux_data->info->scpu_int_en_offset, &scpu_int_en);
+	scpu_int_en |= mask;
 	regmap_write(mux_data->base, mux_data->info->scpu_int_en_offset, scpu_int_en);
 
 	spin_unlock_irqrestore(&mux_data->lock, flags);
@@ -166,7 +159,6 @@ static void realtek_mux_disable_irq(struct irq_data *data)
 	struct realtek_irq_mux_data *mux_data = irq_data_get_irq_chip_data(data);
 	unsigned long flags;
 	u32 scpu_int_en, mask;
-	bool write_enable = mux_data->info->scpu_int_en_we;
 
 	mask = mux_data->info->isr_to_scpu_int_en_mask[data->hwirq];
 	if (!mask || mask == RTK_MUX_IRQ_ALWAYS_ENABLED)
@@ -174,12 +166,8 @@ static void realtek_mux_disable_irq(struct irq_data *data)
 
 	spin_lock_irqsave(&mux_data->lock, flags);
 
-	if (write_enable == true)
-		scpu_int_en = mask << 1;
-	else {
-		regmap_read(mux_data->base, mux_data->info->scpu_int_en_offset, &scpu_int_en);
-		scpu_int_en &= ~mask;
-	}
+	regmap_read(mux_data->base, mux_data->info->scpu_int_en_offset, &scpu_int_en);
+	scpu_int_en &= ~mask;
 	regmap_write(mux_data->base, mux_data->info->scpu_int_en_offset, scpu_int_en);
 
 	spin_unlock_irqrestore(&mux_data->lock, flags);
@@ -497,94 +485,94 @@ static const u32 rtd13xxd_misc_isr_to_scpu_int_en_mask[32] = {
 	[RTD13XXD_ISR_FAN_SHIFT]		= BIT(29),
 };
 
-enum rtd1325_iso_isr_bits {
-	RTD1325_ISO_ISR_TC3_SHIFT =		1,
-	RTD1325_ISO_ISR_UR0_SHIFT =		2,
-	RTD1325_ISO_ISR_LSADC0_SHIFT =		3,
-	RTD1325_ISO_ISR_WDOG1_NMI_SHIFT =	4,
-	RTD1325_ISO_ISR_IRDA_SHIFT =		5,
-	RTD1325_ISO_ISR_SPI1_SHIFT =		6,
-	RTD1325_ISO_ISR_WDOG2_NMI_SHIFT =	7,
-	RTD1325_ISO_ISR_I2C0_SHIFT =		8,
-	RTD1325_ISO_ISR_TC4_SHIFT =		9,
-	RTD1325_ISO_ISR_TC7_SHIFT =		10,
-	RTD1325_ISO_ISR_I2C1_SHIFT =		11,
-	RTD1325_ISO_ISR_HIFI_WAKEUP_SHIFT =	14,
-	RTD1325_ISO_ISR_WDOG4_NMI_SHIFT =	15,
-	RTD1325_ISO_ISR_TC8_SHIFT =		16,
-	RTD1325_ISO_ISR_VFD_SHIFT =		17,
-	RTD1325_ISO_ISR_VTC_SHIFT =		18,
-	RTD1325_ISO_ISR_GPIOA_SHIFT =		19,
-	RTD1325_ISO_ISR_GPIODA_SHIFT =		20,
-	RTD1325_ISO_ISR_ISO_MISC_SHIFT =	21,
-	RTD1325_ISO_ISR_CBUS_SHIFT =		22,
-	RTD1325_ISO_ISR_ETN_SHIFT =		23,
-	RTD1325_ISO_ISR_USB_HOST_SHIFT =	24,
-	RTD1325_ISO_ISR_USB_U3_DRD_SHIFT =	25,
-	RTD1325_ISO_ISR_USB_U2_DRD_SHIFT =	26,
-	RTD1325_ISO_ISR_WDOG3_NMI_SHIFT =	27,
-	RTD1325_ISO_ISR_PORB_HV_CEN_SHIFT =	28,
-	RTD1325_ISO_ISR_PORB_DV_CEN_SHIFT =	29,
-	RTD1325_ISO_ISR_PORB_AV_CEN_SHIFT =	30,
-	RTD1325_ISO_ISR_I2C1_REQ_SHIFT =	31,
+enum rtd13xxe_iso_isr_bits {
+	RTD13XXE_ISO_ISR_TC3_SHIFT =		1,
+	RTD13XXE_ISO_ISR_UR0_SHIFT =		2,
+	RTD13XXE_ISO_ISR_LSADC0_SHIFT =		3,
+	RTD13XXE_ISO_ISR_WDOG1_NMI_SHIFT =	4,
+	RTD13XXE_ISO_ISR_IRDA_SHIFT =		5,
+	RTD13XXE_ISO_ISR_SPI1_SHIFT =		6,
+	RTD13XXE_ISO_ISR_WDOG2_NMI_SHIFT =	7,
+	RTD13XXE_ISO_ISR_I2C0_SHIFT =		8,
+	RTD13XXE_ISO_ISR_TC4_SHIFT =		9,
+	RTD13XXE_ISO_ISR_TC7_SHIFT =		10,
+	RTD13XXE_ISO_ISR_I2C1_SHIFT =		11,
+	RTD13XXE_ISO_ISR_HIFI_WAKEUP_SHIFT =	14,
+	RTD13XXE_ISO_ISR_WDOG4_NMI_SHIFT =	15,
+	RTD13XXE_ISO_ISR_TC8_SHIFT =		16,
+	RTD13XXE_ISO_ISR_VFD_SHIFT =		17,
+	RTD13XXE_ISO_ISR_VTC_SHIFT =		18,
+	RTD13XXE_ISO_ISR_GPIOA_SHIFT =		19,
+	RTD13XXE_ISO_ISR_GPIODA_SHIFT =		20,
+	RTD13XXE_ISO_ISR_ISO_MISC_SHIFT =	21,
+	RTD13XXE_ISO_ISR_CBUS_SHIFT =		22,
+	RTD13XXE_ISO_ISR_ETN_SHIFT =		23,
+	RTD13XXE_ISO_ISR_USB_HOST_SHIFT =	24,
+	RTD13XXE_ISO_ISR_USB_U3_DRD_SHIFT =	25,
+	RTD13XXE_ISO_ISR_USB_U2_DRD_SHIFT =	26,
+	RTD13XXE_ISO_ISR_WDOG3_NMI_SHIFT =	27,
+	RTD13XXE_ISO_ISR_PORB_HV_CEN_SHIFT =	28,
+	RTD13XXE_ISO_ISR_PORB_DV_CEN_SHIFT =	29,
+	RTD13XXE_ISO_ISR_PORB_AV_CEN_SHIFT =	30,
+	RTD13XXE_ISO_ISR_I2C1_REQ_SHIFT =	31,
 };
-static const u32 rtd1325_iso_isr_to_scpu_int_en_mask[32] = {
-	[RTD1325_ISO_ISR_SPI1_SHIFT]		= BIT(1),
-	[RTD1325_ISO_ISR_UR0_SHIFT]		= BIT(2),
-	[RTD1325_ISO_ISR_LSADC0_SHIFT]		= BIT(3),
-	[RTD1325_ISO_ISR_IRDA_SHIFT]		= BIT(5),
-	[RTD1325_ISO_ISR_I2C0_SHIFT]		= BIT(8),
-	[RTD1325_ISO_ISR_I2C1_SHIFT]		= BIT(11),
-	[RTD1325_ISO_ISR_VFD_SHIFT]		= BIT(17),
-	[RTD1325_ISO_ISR_GPIOA_SHIFT]		= BIT(19),
-	[RTD1325_ISO_ISR_GPIODA_SHIFT]		= BIT(20),
-	[RTD1325_ISO_ISR_PORB_HV_CEN_SHIFT]	= BIT(28),
-	[RTD1325_ISO_ISR_PORB_DV_CEN_SHIFT]	= BIT(29),
-	[RTD1325_ISO_ISR_PORB_AV_CEN_SHIFT]	= BIT(30),
-	[RTD1325_ISO_ISR_I2C1_REQ_SHIFT]	= BIT(31),
-	[RTD1325_ISO_ISR_WDOG1_NMI_SHIFT]      = RTK_MUX_IRQ_ALWAYS_ENABLED,
-	[RTD1325_ISO_ISR_WDOG2_NMI_SHIFT]      = RTK_MUX_IRQ_ALWAYS_ENABLED,
-	[RTD1325_ISO_ISR_WDOG3_NMI_SHIFT]      = RTK_MUX_IRQ_ALWAYS_ENABLED,
-	[RTD1325_ISO_ISR_WDOG4_NMI_SHIFT]      = RTK_MUX_IRQ_ALWAYS_ENABLED,
+static const u32 rtd13xxe_iso_isr_to_scpu_int_en_mask[32] = {
+	[RTD13XXE_ISO_ISR_SPI1_SHIFT]		= BIT(1),
+	[RTD13XXE_ISO_ISR_UR0_SHIFT]		= BIT(2),
+	[RTD13XXE_ISO_ISR_LSADC0_SHIFT]		= BIT(3),
+	[RTD13XXE_ISO_ISR_IRDA_SHIFT]		= BIT(5),
+	[RTD13XXE_ISO_ISR_I2C0_SHIFT]		= BIT(8),
+	[RTD13XXE_ISO_ISR_I2C1_SHIFT]		= BIT(11),
+	[RTD13XXE_ISO_ISR_VFD_SHIFT]		= BIT(17),
+	[RTD13XXE_ISO_ISR_GPIOA_SHIFT]		= BIT(19),
+	[RTD13XXE_ISO_ISR_GPIODA_SHIFT]		= BIT(20),
+	[RTD13XXE_ISO_ISR_PORB_HV_CEN_SHIFT]	= BIT(28),
+	[RTD13XXE_ISO_ISR_PORB_DV_CEN_SHIFT]	= BIT(29),
+	[RTD13XXE_ISO_ISR_PORB_AV_CEN_SHIFT]	= BIT(30),
+	[RTD13XXE_ISO_ISR_I2C1_REQ_SHIFT]	= BIT(31),
+	[RTD13XXE_ISO_ISR_WDOG1_NMI_SHIFT]      = RTK_MUX_IRQ_ALWAYS_ENABLED,
+	[RTD13XXE_ISO_ISR_WDOG2_NMI_SHIFT]      = RTK_MUX_IRQ_ALWAYS_ENABLED,
+	[RTD13XXE_ISO_ISR_WDOG3_NMI_SHIFT]      = RTK_MUX_IRQ_ALWAYS_ENABLED,
+	[RTD13XXE_ISO_ISR_WDOG4_NMI_SHIFT]      = RTK_MUX_IRQ_ALWAYS_ENABLED,
 };
-enum rtd1325_misc_isr_bits {
-	RTD1325_ISR_UR1_SHIFT =			3,
-	RTD1325_ISR_TC5_SHIFT =			4,
-	RTD1325_ISR_UR1_TO_SHIFT =		5,
-	RTD1325_ISR_TC0_SHIFT =			6,
-	RTD1325_ISR_TC1_SHIFT =			7,
-	RTD1325_ISR_UR2_SHIFT =			8,
-	RTD1325_ISR_UR2_TO_SHIFT =		13,
-	RTD1325_ISR_I2C5_SHIFT =		14,
-	RTD1325_ISR_I2C4_SHIFT =		15,
-	RTD1325_ISR_DRTC_HSEC_SHIFT =		16,
-	RTD1325_ISR_DRTC_MIN_SHIFT =		17,
-	RTD1325_ISR_DRTC_HOUR_SHIFT =		18,
-	RTD1325_ISR_DRTC_DATE_SHIFT =		19,
-	RTD1325_ISR_DRTC_ALARM_SHIFT =		20,
-	RTD1325_ISR_I2C3_SHIFT =		23,
-	RTD1325_ISR_SC0_SHIFT =			24,
-	RTD1325_ISR_SC1_SHIFT =			25,
-	RTD1325_ISR_SPI_SHIFT =			27,
-	RTD1325_ISR_FAN_SHIFT =			29,
+enum rtd13xxe_misc_isr_bits {
+	RTD13XXE_ISR_UR1_SHIFT =			3,
+	RTD13XXE_ISR_TC5_SHIFT =			4,
+	RTD13XXE_ISR_UR1_TO_SHIFT =		5,
+	RTD13XXE_ISR_TC0_SHIFT =			6,
+	RTD13XXE_ISR_TC1_SHIFT =			7,
+	RTD13XXE_ISR_UR2_SHIFT =			8,
+	RTD13XXE_ISR_UR2_TO_SHIFT =		13,
+	RTD13XXE_ISR_I2C5_SHIFT =		14,
+	RTD13XXE_ISR_I2C4_SHIFT =		15,
+	RTD13XXE_ISR_DRTC_HSEC_SHIFT =		16,
+	RTD13XXE_ISR_DRTC_MIN_SHIFT =		17,
+	RTD13XXE_ISR_DRTC_HOUR_SHIFT =		18,
+	RTD13XXE_ISR_DRTC_DATE_SHIFT =		19,
+	RTD13XXE_ISR_DRTC_ALARM_SHIFT =		20,
+	RTD13XXE_ISR_I2C3_SHIFT =		23,
+	RTD13XXE_ISR_SC0_SHIFT =			24,
+	RTD13XXE_ISR_SC1_SHIFT =			25,
+	RTD13XXE_ISR_SPI_SHIFT =			27,
+	RTD13XXE_ISR_FAN_SHIFT =			29,
 };
-static const u32 rtd1325_misc_isr_to_scpu_int_en_mask[32] = {
-	[RTD1325_ISR_UR1_SHIFT]			= BIT(3),
-	[RTD1325_ISR_UR1_TO_SHIFT]		= BIT(5),
-	[RTD1325_ISR_UR2_TO_SHIFT]		= BIT(6),
-	[RTD1325_ISR_UR2_SHIFT]			= BIT(7),
-	[RTD1325_ISR_I2C5_SHIFT]		= BIT(14),
-	[RTD1325_ISR_I2C4_SHIFT]		= BIT(15),
-	[RTD1325_ISR_DRTC_HSEC_SHIFT]		= BIT(16),
-	[RTD1325_ISR_DRTC_MIN_SHIFT]		= BIT(17),
-	[RTD1325_ISR_DRTC_HOUR_SHIFT]		= BIT(18),
-	[RTD1325_ISR_DRTC_DATE_SHIFT]		= BIT(19),
-	[RTD1325_ISR_DRTC_ALARM_SHIFT]		= BIT(20),
-	[RTD1325_ISR_SC0_SHIFT]			= BIT(24),
-	[RTD1325_ISR_SC1_SHIFT]			= BIT(25),
-	[RTD1325_ISR_SPI_SHIFT]			= BIT(27),
-	[RTD1325_ISR_I2C3_SHIFT]		= BIT(28),
-	[RTD1325_ISR_FAN_SHIFT]			= BIT(29),
+static const u32 rtd13xxe_misc_isr_to_scpu_int_en_mask[32] = {
+	[RTD13XXE_ISR_UR1_SHIFT]			= BIT(3),
+	[RTD13XXE_ISR_UR1_TO_SHIFT]		= BIT(5),
+	[RTD13XXE_ISR_UR2_TO_SHIFT]		= BIT(6),
+	[RTD13XXE_ISR_UR2_SHIFT]			= BIT(7),
+	[RTD13XXE_ISR_I2C5_SHIFT]		= BIT(14),
+	[RTD13XXE_ISR_I2C4_SHIFT]		= BIT(15),
+	[RTD13XXE_ISR_DRTC_HSEC_SHIFT]		= BIT(16),
+	[RTD13XXE_ISR_DRTC_MIN_SHIFT]		= BIT(17),
+	[RTD13XXE_ISR_DRTC_HOUR_SHIFT]		= BIT(18),
+	[RTD13XXE_ISR_DRTC_DATE_SHIFT]		= BIT(19),
+	[RTD13XXE_ISR_DRTC_ALARM_SHIFT]		= BIT(20),
+	[RTD13XXE_ISR_SC0_SHIFT]			= BIT(24),
+	[RTD13XXE_ISR_SC1_SHIFT]			= BIT(25),
+	[RTD13XXE_ISR_SPI_SHIFT]			= BIT(27),
+	[RTD13XXE_ISR_I2C3_SHIFT]		= BIT(28),
+	[RTD13XXE_ISR_FAN_SHIFT]			= BIT(29),
 };
 
 enum rtd129x_iso_isr_bits {
@@ -658,119 +646,6 @@ static const u32 rtd129x_misc_isr_to_scpu_int_en_mask[32] = {
 	[RTD129X_MIS_ISR_FAN_SHIFT]		= BIT(29),
 	[RTD129X_MIS_ISR_WDOG_NMI_SHIFT]	= RTK_MUX_IRQ_ALWAYS_ENABLED,
 };
-
-enum rtd1625_iso_isr_bits {
-	RTD1625_ISO_ISR_TC3_SHIFT =		1,
-	RTD1625_ISO_ISR_UR0_SHIFT =		2,
-	RTD1625_ISO_ISR_UR9_SHIFT =		3,
-	RTD1625_ISO_ISR_SPI0_SHIFT =		4,
-	RTD1625_ISO_ISR_SPI1_SHIFT =		5,
-	RTD1625_ISO_ISR_SPI2_SHIFT =		6,
-	RTD1625_ISO_ISR_I2C0_SHIFT =		8,
-	RTD1625_ISO_ISR_TC4_SHIFT =		9,
-	RTD1625_ISO_ISR_I2C7_SHIFT =		10,
-	RTD1625_ISO_ISR_I2C1_SHIFT =		11,
-	RTD1625_ISO_ISR_DRTC_HSEC_SHIFT =	12,
-	RTD1625_ISO_ISR_DRTC_MIN_SHIFT =	13,
-	RTD1625_ISO_ISR_DRTC_HOUR_SHIFT =	14,
-	RTD1625_ISO_ISR_DRTC_DATE_SHIFT =	15,
-	RTD1625_ISO_ISR_DRTC_ALARM_SHIFT =	16,
-	RTD1625_ISO_ISR_VFD_SHIFT =		17,
-	RTD1625_ISO_ISR_GPIOA_SHIFT =		19,
-	RTD1625_ISO_ISR_GPIODA_SHIFT =		20,
-	RTD1625_ISO_ISR_LSADC0_SHIFT =		21,
-	RTD1625_ISO_ISR_LSADC1_SHIFT =		22,
-	RTD1625_ISO_ISR_PORB_HV_CEN_SHIFT =	28,
-	RTD1625_ISO_ISR_PORB_DV_CEN_SHIFT =	29,
-	RTD1625_ISO_ISR_PORB_AV_CEN_SHIFT =	30,
-	RTD1625_ISO_ISR_I2C1_REQ_SHIFT =	31,
-};
-static const u32 rtd1625_iso_isr_to_scpu_int_en_mask[32] = {
-	[RTD1625_ISO_ISR_UR0_SHIFT]		= BIT(2),
-	[RTD1625_ISO_ISR_UR9_SHIFT]		= BIT(3),
-	[RTD1625_ISO_ISR_SPI0_SHIFT]		= BIT(4),
-	[RTD1625_ISO_ISR_SPI1_SHIFT]		= BIT(5),
-	[RTD1625_ISO_ISR_SPI2_SHIFT]		= BIT(6),
-	[RTD1625_ISO_ISR_I2C0_SHIFT]		= BIT(8),
-	[RTD1625_ISO_ISR_I2C7_SHIFT]		= BIT(10),
-	[RTD1625_ISO_ISR_I2C1_SHIFT]		= BIT(11),
-	[RTD1625_ISO_ISR_DRTC_HSEC_SHIFT]	= BIT(12),
-	[RTD1625_ISO_ISR_DRTC_MIN_SHIFT]	= BIT(13),
-	[RTD1625_ISO_ISR_DRTC_HOUR_SHIFT]	= BIT(14),
-	[RTD1625_ISO_ISR_DRTC_DATE_SHIFT]	= BIT(15),
-	[RTD1625_ISO_ISR_DRTC_ALARM_SHIFT]	= BIT(16),
-	[RTD1625_ISO_ISR_VFD_SHIFT]		= BIT(17),
-	[RTD1625_ISO_ISR_GPIOA_SHIFT]		= BIT(19),
-	[RTD1625_ISO_ISR_GPIODA_SHIFT]		= BIT(20),
-	[RTD1625_ISO_ISR_LSADC0_SHIFT]		= BIT(21),
-	[RTD1625_ISO_ISR_LSADC1_SHIFT]		= BIT(22),
-	[RTD1625_ISO_ISR_PORB_HV_CEN_SHIFT]	= BIT(28),
-	[RTD1625_ISO_ISR_PORB_DV_CEN_SHIFT]	= BIT(29),
-	[RTD1625_ISO_ISR_PORB_AV_CEN_SHIFT]	= BIT(30),
-	[RTD1625_ISO_ISR_I2C1_REQ_SHIFT]	= BIT(31),
-};
-enum rtd1625_misc_isr_bits {
-	RTD1625_ISR_TC8_SHIFT			= 1,
-	RTD1625_ISR_TC9_SHIFT			= 2,
-	RTD1625_ISR_TC5_SHIFT			= 4,
-	RTD1625_ISR_TC0_SHIFT			= 6,
-	RTD1625_ISR_TC1_SHIFT			= 7,
-	RTD1625_ISR_I2C5_SHIFT			= 14,
-	RTD1625_ISR_I2C4_SHIFT			= 15,
-	RTD1625_ISR_I2C6_SHIFT			= 22,
-	RTD1625_ISR_I2C3_SHIFT			= 23,
-	RTD1625_ISR_SC0_SHIFT			= 24,
-	RTD1625_ISR_SC1_SHIFT			= 25,
-	RTD1625_ISR_FAN_SHIFT			= 29,
-};
-static const u32 rtd1625_misc_isr_to_scpu_int_en_mask[32] = {
-	[RTD1625_ISR_I2C6_SHIFT]		= BIT(13),
-	[RTD1625_ISR_I2C5_SHIFT]		= BIT(14),
-	[RTD1625_ISR_I2C4_SHIFT]		= BIT(15),
-	[RTD1625_ISR_SC0_SHIFT]			= BIT(24),
-	[RTD1625_ISR_SC1_SHIFT]			= BIT(25),
-	[RTD1625_ISR_I2C3_SHIFT]		= BIT(28),
-	[RTD1625_ISR_FAN_SHIFT]			= BIT(29),
-};
-
-enum rtd1625_misc_isr2_bits {
-	RTD1625_ISR_UR1_SHIFT			= 1,
-	RTD1625_ISR_UR2_SHIFT			= 2,
-	RTD1625_ISR_UR3_SHIFT			= 3,
-	RTD1625_ISR_UR4_SHIFT			= 4,
-	RTD1625_ISR_UR5_SHIFT			= 5,
-	RTD1625_ISR_UR6_SHIFT			= 6,
-	RTD1625_ISR_UR7_SHIFT			= 7,
-	RTD1625_ISR_UR8_SHIFT			= 8,
-};
-
-static const u32 rtd1625_misc_isr2_to_scpu_int_en_mask[32] = {
-	[RTD1625_ISR_UR1_SHIFT]			= BIT(0),
-	[RTD1625_ISR_UR2_SHIFT]			= BIT(2),
-	[RTD1625_ISR_UR3_SHIFT]			= BIT(4),
-	[RTD1625_ISR_UR4_SHIFT]			= BIT(6),
-	[RTD1625_ISR_UR5_SHIFT]			= BIT(8),
-	[RTD1625_ISR_UR6_SHIFT]			= BIT(10),
-	[RTD1625_ISR_UR7_SHIFT]			= BIT(12),
-	[RTD1625_ISR_UR8_SHIFT]			= BIT(14),
-};
-
-enum rtd1625_isom_isr_bits {
-	RTD1625_ISOM_ISR_GPIOA_SHIFT		= 0,
-	RTD1625_ISOM_ISR_GPIODA_SHIFT		= 1,
-	RTD1625_ISOM_ISR_GPIO_LEVEL		= 2,
-	RTD1625_ISOMISR_UR10_SHIFT		= 4,
-	RTD1625_ISOMISR_IRDA_SHIFT		= 5,
-};
-
-static const u32 rtd1625_isom_isr_to_scpu_int_en_mask[32] = {
-	[RTD1625_ISOM_ISR_GPIOA_SHIFT]		= BIT(0),
-	[RTD1625_ISOM_ISR_GPIODA_SHIFT]		= BIT(1),
-	[RTD1625_ISOM_ISR_GPIO_LEVEL]		= BIT(2),
-	[RTD1625_ISOMISR_UR10_SHIFT]		= BIT(4),
-	[RTD1625_ISOMISR_IRDA_SHIFT]		= BIT(5),
-};
-
 
 static struct realtek_irq_mux_subset_cfg rtd13xx_iso_irq_cfgs[] = {
 	{ 0xffffcffe, },
@@ -861,34 +736,34 @@ static const struct realtek_irq_mux_info rtd13xxd_misc_irq_mux_info = {
 	.cfg_num = ARRAY_SIZE(rtd13xxd_misc_irq_cfgs),
 };
 
-static struct realtek_irq_mux_subset_cfg rtd1325_iso_irq_cfgs[] = {
+static struct realtek_irq_mux_subset_cfg rtd13xxe_iso_irq_cfgs[] = {
 	{ 0xf7ff7f6e, },
 	{ 0x08008090, }, /* wdt */
 };
 
-static const struct realtek_irq_mux_info rtd1325_iso_irq_mux_info = {
+static const struct realtek_irq_mux_info rtd13xxe_iso_irq_mux_info = {
 	.isr_offset		= 0x0,
 	.umsk_isr_offset	= 0x4,
 	.scpu_int_en_offset	= 0x40,
-	.isr_to_scpu_int_en_mask = rtd1325_iso_isr_to_scpu_int_en_mask,
-	.cfg = rtd1325_iso_irq_cfgs,
-	.cfg_num = ARRAY_SIZE(rtd1325_iso_irq_cfgs),
+	.isr_to_scpu_int_en_mask = rtd13xxe_iso_isr_to_scpu_int_en_mask,
+	.cfg = rtd13xxe_iso_irq_cfgs,
+	.cfg_num = ARRAY_SIZE(rtd13xxe_iso_irq_cfgs),
 };
 
-static struct realtek_irq_mux_subset_cfg rtd1325_misc_irq_cfgs[] = {
+static struct realtek_irq_mux_subset_cfg rtd13xxe_misc_irq_cfgs[] = {
 	{ 0xffe0ded6, },
 	{ 0x00000028, }, /* ur1 */
 	{ 0x00002100, }, /* ur2 */
 	{ 0x001f0000, }, /* rtc */
 };
 
-static const struct realtek_irq_mux_info rtd1325_misc_irq_mux_info = {
+static const struct realtek_irq_mux_info rtd13xxe_misc_irq_mux_info = {
 	.umsk_isr_offset	= 0x8,
 	.isr_offset		= 0xc,
 	.scpu_int_en_offset	= 0x80,
-	.isr_to_scpu_int_en_mask = rtd1325_misc_isr_to_scpu_int_en_mask,
-	.cfg = rtd1325_misc_irq_cfgs,
-	.cfg_num = ARRAY_SIZE(rtd1325_misc_irq_cfgs),
+	.isr_to_scpu_int_en_mask = rtd13xxe_misc_isr_to_scpu_int_en_mask,
+	.cfg = rtd13xxe_misc_irq_cfgs,
+	.cfg_num = ARRAY_SIZE(rtd13xxe_misc_irq_cfgs),
 };
 
 static struct realtek_irq_mux_subset_cfg rtd129x_iso_irq_cfgs[] = {
@@ -919,63 +794,6 @@ static const struct realtek_irq_mux_info rtd129x_misc_irq_mux_info = {
 	.cfg_num = ARRAY_SIZE(rtd129x_misc_irq_cfgs),
 };
 
-static struct realtek_irq_mux_subset_cfg rtd1625_iso_irq_cfgs[] = {
-	{ 0xfffe0ff6, },
-	{ 0x00000008, }, /* ur9 */
-	{ 0x0001f000, }, /* rtc */
-};
-
-static const struct realtek_irq_mux_info rtd1625_iso_irq_mux_info = {
-	.isr_offset		= 0x0,
-	.umsk_isr_offset	= 0x4,
-	.scpu_int_en_offset	= 0x40,
-	.isr_to_scpu_int_en_mask = rtd1625_iso_isr_to_scpu_int_en_mask,
-	.cfg = rtd1625_iso_irq_cfgs,
-	.cfg_num = ARRAY_SIZE(rtd1625_iso_irq_cfgs),
-};
-
-static struct realtek_irq_mux_subset_cfg rtd1625_misc_irq_cfgs[] = {
-	{ 0xfffffffe, },
-};
-
-static const struct realtek_irq_mux_info rtd1625_misc_irq_mux_info = {
-	.umsk_isr_offset	= 0x8,
-	.isr_offset		= 0xc,
-	.scpu_int_en_offset	= 0x80,
-	.isr_to_scpu_int_en_mask = rtd1625_misc_isr_to_scpu_int_en_mask,
-	.cfg = rtd1625_misc_irq_cfgs,
-	.cfg_num = ARRAY_SIZE(rtd1625_misc_irq_cfgs),
-};
-
-static struct realtek_irq_mux_subset_cfg rtd1625_misc_irq2_cfgs[] = {
-	{ 0xfffffff8, },
-	{ 0x00000002, }, /* ur1 */
-	{ 0x00000004, }, /* ur2 */
-};
-
-static const struct realtek_irq_mux_info rtd1625_misc_irq2_mux_info = {
-	.umsk_isr_offset	= 0x4,
-	.isr_offset		= 0x4,
-	.scpu_int_en_offset	= 0x88,
-	.scpu_int_en_we		= true,
-	.isr_to_scpu_int_en_mask = rtd1625_misc_isr2_to_scpu_int_en_mask,
-	.cfg = rtd1625_misc_irq2_cfgs,
-	.cfg_num = ARRAY_SIZE(rtd1625_misc_irq2_cfgs),
-};
-
-static struct realtek_irq_mux_subset_cfg rtd1625_isom_irq_cfgs[] = {
-	{ 0x00000037 },
-};
-
-static const struct realtek_irq_mux_info rtd1625_isom_irq_mux_info = {
-	.umsk_isr_offset	= 0x4,
-	.isr_offset		= 0x0,
-	.scpu_int_en_offset	= 0x10,
-	.isr_to_scpu_int_en_mask = rtd1625_isom_isr_to_scpu_int_en_mask,
-	.cfg = rtd1625_isom_irq_cfgs,
-	.cfg_num = ARRAY_SIZE(rtd1625_isom_irq_cfgs),
-};
-
 static const struct of_device_id realtek_irq_mux_dt_matches[] = {
 	{
 		.compatible = "realtek,rtd13xx-iso-irq-mux",
@@ -996,29 +814,17 @@ static const struct of_device_id realtek_irq_mux_dt_matches[] = {
 		.compatible = "realtek,rtd13xxd-misc-irq-mux",
 		.data = &rtd13xxd_misc_irq_mux_info,
 	}, {
-		.compatible = "realtek,rtd1325-iso-irq-mux",
-		.data = &rtd1325_iso_irq_mux_info,
+		.compatible = "realtek,rtd13xxe-iso-irq-mux",
+		.data = &rtd13xxe_iso_irq_mux_info,
 	}, {
-		.compatible = "realtek,rtd1325-misc-irq-mux",
-		.data = &rtd1325_misc_irq_mux_info,
+		.compatible = "realtek,rtd13xxe-misc-irq-mux",
+		.data = &rtd13xxe_misc_irq_mux_info,
 	}, {
 		.compatible = "realtek,rtd129x-iso-irq-mux",
 		.data = &rtd129x_iso_irq_mux_info,
 	}, {
 		.compatible = "realtek,rtd129x-misc-irq-mux",
 		.data = &rtd129x_iso_irq_mux_info,
-	}, {
-		.compatible = "realtek,rtd1625-iso-irq-mux",
-		.data = &rtd1625_iso_irq_mux_info,
-	}, {
-		.compatible = "realtek,rtd1625-misc-irq-mux",
-		.data = &rtd1625_misc_irq_mux_info,
-	}, {
-		.compatible = "realtek,rtd1625-misc-irq2-mux",
-		.data = &rtd1625_misc_irq2_mux_info,
-	}, {
-		.compatible = "realtek,rtd1625-isom-irq-mux",
-		.data = &rtd1625_isom_irq_mux_info,
 	},
 	{ /* sentinel */ }
 };
@@ -1075,45 +881,8 @@ static int realtek_irq_mux_probe(struct platform_device *pdev)
 		WARN(ret, "failed to init subset %d: %d", i, ret);
 	}
 
-	platform_set_drvdata(pdev, data);
-
 	return 0;
 }
-
-static int realtek_irq_mux_suspend(struct device *dev)
-{
-	struct realtek_irq_mux_data *data = dev_get_drvdata(dev);
-	const struct realtek_irq_mux_info *info = data->info;
-
-	dev_info(dev, "%s enter\n", __func__);
-	regmap_read(data->base, info->scpu_int_en_offset, &data->saved_en);
-
-	regmap_write(data->base, info->scpu_int_en_offset, 0);
-	regmap_write(data->base, info->umsk_isr_offset,    0xfffffffe);
-	regmap_write(data->base, info->isr_offset,         0xfffffffe);
-	dev_info(dev, "%s exit\n", __func__);
-
-	return 0;
-}
-
-static int realtek_irq_mux_resume(struct device *dev)
-{
-	struct realtek_irq_mux_data *data = dev_get_drvdata(dev);
-	const struct realtek_irq_mux_info *info = data->info;
-
-	dev_info(dev, "%s enter\n", __func__);
-	regmap_write(data->base, info->umsk_isr_offset,    0xfffffffe);
-	regmap_write(data->base, info->isr_offset,         0xfffffffe);
-	regmap_write(data->base, info->scpu_int_en_offset, data->saved_en);
-	dev_info(dev, "%s exit\n", __func__);
-
-	return 0;
-}
-
-static const struct dev_pm_ops realtek_irq_mux_pm_ops = {
-        .suspend_noirq = realtek_irq_mux_suspend,
-        .resume_noirq = realtek_irq_mux_resume,
-};
 
 static struct platform_driver realtek_irq_mux_driver = {
 	.probe = realtek_irq_mux_probe,
@@ -1122,7 +891,6 @@ static struct platform_driver realtek_irq_mux_driver = {
 		.name = "realtek_irq_mux",
 		.of_match_table = realtek_irq_mux_dt_matches,
 		.suppress_bind_attrs = true,
-		.pm = &realtek_irq_mux_pm_ops,
 	},
 };
 
