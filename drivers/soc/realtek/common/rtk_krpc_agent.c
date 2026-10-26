@@ -54,15 +54,13 @@ static void  krpc_work(struct work_struct *work)
 	struct rtk_krpc_ept *krpc_ept = container_of(work, struct rtk_krpc_ept, work);
 	struct sk_buff *skb;
 	struct rpc_struct *rpc;
-	unsigned long flags;
 
-	spin_lock_irqsave(&krpc_ept->queue_lock, flags);
-	if (skb_queue_empty(&krpc_ept->queue)) {
-		spin_unlock_irqrestore(&krpc_ept->queue_lock, flags);
+	spin_lock(&krpc_ept->queue_lock);
+	/* NOTE: as in the device build, this returns with queue_lock held */
+	if (skb_queue_empty(&krpc_ept->queue))
 		return;
-	}
 	skb = skb_dequeue(&krpc_ept->queue);
-	spin_unlock_irqrestore(&krpc_ept->queue_lock, flags);
+	spin_unlock(&krpc_ept->queue_lock);
 
 	rpc = (struct rpc_struct *)skb->data;
 
@@ -181,7 +179,7 @@ struct rtk_krpc_ept_info *of_krpc_ept_info_get(struct device_node *np, int index
 	pdev = of_find_device_by_node(agent_np);
 	of_node_put(agent_np);
 	if (!pdev) {
-		pr_err("%s: cannot find agent_np device\n", np->full_name);
+		pr_debug("%s: cannot find agent_np device\n", np->full_name);
 		return ERR_PTR(-EPROBE_DEFER);
 	}
 
@@ -234,7 +232,6 @@ static int rtk_krpc_agent_probe(struct platform_device *pdev)
 static const struct of_device_id rtk_krpc_agent_of_match[] = {
 	{ .compatible = "realtek,krpc-agent-acpu", .data = "acpu-agent" },
 	{ .compatible = "realtek,krpc-agent-vcpu", .data = "vcpu-agent" },
-	{ .compatible = "realtek,krpc-agent-ve3", .data = "ve3-agent" },
 	{ .compatible = "realtek,krpc-agent-hifi", .data = "hifi-agent" },
 	{ .compatible = "realtek,krpc-agent-hifi1", .data = "hifi1-agent" },
 	{ .compatible = "realtek,krpc-agent-kr4", .data = "kr4-agent" },
