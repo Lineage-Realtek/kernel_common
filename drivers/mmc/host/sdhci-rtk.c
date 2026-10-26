@@ -5,28 +5,24 @@
  * Copyright (c) 2017-2020 Realtek Semiconductor Corp.
  */
 
-#include <linux/bitfield.h>
-#include <linux/delay.h>
-#include <linux/err.h>
-#include <linux/init.h>
-#include <linux/io.h>
-#include <linux/mfd/syscon.h>
-#include <linux/mmc/card.h>
-#include <linux/mmc/host.h>
-#include <linux/mmc/mmc.h>
-#include <linux/mmc/sd.h>
-#include <linux/mmc/sdio.h>
-#include <linux/mmc/slot-gpio.h>
+#include <linux/utsname.h>
 #include <linux/module.h>
+#include <linux/init.h>
+#include <linux/delay.h>
+#include <linux/reset.h>
+#include <linux/err.h>
+#include <linux/io.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
-#include <linux/pinctrl/consumer.h>
-#include <linux/regmap.h>
-#include <linux/regulator/consumer.h>
-#include <linux/reset.h>
+#include <linux/bitfield.h>
+#include <linux/mmc/mmc.h>
+#include <linux/mmc/card.h>
+#include <linux/mmc/sdio.h>
+#include <linux/mmc/sd.h>
+#include <linux/mmc/host.h>
+#include <linux/mmc/slot-gpio.h>
 #include <linux/sys_soc.h>
-#include <linux/utsname.h>
 
 #include "sdhci-pltfm.h"
 #include "sdhci-rtk.h"
@@ -42,23 +38,18 @@ struct sdhci_rtk_soc_data {
 struct sdhci_rtk {
 	const struct sdhci_rtk_soc_data *soc_data;
 	struct gpio_desc *wifi_rst;
-	struct regulator *dev_pwr;
 	struct gpio_desc *sd_pwr_gpio;
 	struct clk *clk_en_sdio;
 	struct clk *clk_en_sdio_ip;
 	struct reset_control *rstc_sdio;
-	void __iomem *wrap_base;
-	struct regmap *crt_base;
-	struct regmap *iso_base;
-	struct regmap *pinctrl_base;
-	struct regmap *isosys_base;
+	void __iomem *crt_membase;
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *pins_default;
 	struct pinctrl_state *pins_3v3_drv;
 	struct pinctrl_state *pins_1v8_drv;
 	struct pinctrl_state *pins_vsel_3v3;
 	struct pinctrl_state *pins_vsel_1v8;
-	u32 preset_pll;
+	unsigned int preset_pll;
 	int location;
 };
 
@@ -67,9 +58,17 @@ static const struct soc_device_attribute rtk_soc_thor[] = {
 	{ /* sentinel */ }
 };
 
+static const struct soc_device_attribute rtk_soc_thor_a01[] = {
+	{ .family = "Realtek Thor", .revision = "A01", },
+	{ /* sentinel */ }
+};
+
 static const struct soc_device_attribute rtk_soc_hank[] = {
 	{ .family = "Realtek Hank", },
-	{ .family = "Realtek Hope", },
+	{ /* sentinel */ }
+};
+
+static const struct soc_device_attribute rtk_soc_groot[] = {
 	{ .family = "Realtek Groot", },
 	{ /* sentinel */ }
 };
@@ -84,51 +83,30 @@ static const struct soc_device_attribute rtk_soc_parker[] = {
 	{ /* sentinel */ }
 };
 
-static const struct soc_device_attribute rtk_soc_kent[] = {
-	{ .family = "Realtek Kent", },
-	{ /* sentinel */ }
-};
-
-static const struct soc_device_attribute rtk_soc_axi_boundary[] = {
-	{ .family = "Realtek Stark", },
-	{ .family = "Realtek Parker", },
-	{ /* sentinel */ }
-};
-
-static const struct soc_device_attribute rtk_soc_pll_v2[] = {
-	{ .family = "Realtek Kent", },
-	{ /* sentinel */ }
-};
-
-static const struct soc_device_attribute rtk_soc_power_cut[] = {
-	{ .family = "Realtek Kent", },
-	{ /* sentinel */ }
-};
-
 static void rtk_sdhci_sd_pad_power_ctrl(struct sdhci_host *host, int voltage)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct regmap *crt_base = rtk_host->crt_base;
+	void __iomem *crt_membase = rtk_host->crt_membase;
 	u32 reg;
 
 	switch (voltage) {
 	case MMC_SIGNAL_VOLTAGE_180:
-		regmap_read(crt_base, SYS_PLL_SD1, &reg);
+		reg = readl(crt_membase + SYS_PLL_SD1);
 		reg &= ~REG_SEL3318_MASK;
-		regmap_write(crt_base, SYS_PLL_SD1, reg);
+		writel(reg, crt_membase + SYS_PLL_SD1);
 
 		mdelay(1);
 
-		regmap_read(crt_base, SYS_PLL_SD1, &reg);
+		reg = readl(crt_membase + SYS_PLL_SD1);
 		reg |= FIELD_PREP(REG_SEL3318_MASK, REG_SEL3318_0V);
-		regmap_write(crt_base, SYS_PLL_SD1, reg);
+		writel(reg, crt_membase + SYS_PLL_SD1);
 
 		mdelay(1);
 
-		regmap_read(crt_base, SYS_PLL_SD1, &reg);
+		reg = readl(crt_membase + SYS_PLL_SD1);
 		reg |= FIELD_PREP(REG_SEL3318_MASK, REG_SEL3318_1V8);
-		regmap_write(crt_base, SYS_PLL_SD1, reg);
+		writel(reg, crt_membase + SYS_PLL_SD1);
 
 		mdelay(1);
 
@@ -136,13 +114,13 @@ static void rtk_sdhci_sd_pad_power_ctrl(struct sdhci_host *host, int voltage)
 
 		break;
 	case MMC_SIGNAL_VOLTAGE_330:
-		regmap_read(crt_base, SYS_PLL_SD1, &reg);
+		reg = readl(crt_membase + SYS_PLL_SD1);
 
 		if (FIELD_GET(REG_SEL3318_MASK, reg) == REG_SEL3318_3V3)
 			return;
 
 		reg &= ~FIELD_PREP(REG_SEL3318_MASK, REG_SEL3318_3V3);
-		regmap_write(crt_base, SYS_PLL_SD1, reg);
+		writel(reg, crt_membase + SYS_PLL_SD1);
 
 		mdelay(1);
 
@@ -150,15 +128,15 @@ static void rtk_sdhci_sd_pad_power_ctrl(struct sdhci_host *host, int voltage)
 
 		mdelay(1);
 
-		regmap_read(crt_base, SYS_PLL_SD1, &reg);
+		reg = readl(crt_membase + SYS_PLL_SD1);
 		reg &= ~REG_SEL3318_MASK;
-		regmap_write(crt_base, SYS_PLL_SD1, reg);
+		writel(reg, crt_membase + SYS_PLL_SD1);
 
 		mdelay(1);
 
-		regmap_read(crt_base, SYS_PLL_SD1, &reg);
+		reg = readl(crt_membase + SYS_PLL_SD1);
 		reg |= FIELD_PREP(REG_SEL3318_MASK, REG_SEL3318_3V3);
-		regmap_write(crt_base, SYS_PLL_SD1, reg);
+		writel(reg, crt_membase + SYS_PLL_SD1);
 
 		break;
 	}
@@ -201,19 +179,16 @@ static void rtk_sdhci_pad_driving_configure(struct sdhci_host *host)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct regmap *pinctrl_base = rtk_host->pinctrl_base;
-	u32 reg;
+	void __iomem *crt_membase = rtk_host->crt_membase;
 
 	if (soc_device_match(rtk_soc_thor)) {
-		regmap_read(pinctrl_base, ISO_PFUNC4, &reg);
-		reg = (reg & 0xf) | 0xAF75EEB0;
-		regmap_write(pinctrl_base, ISO_PFUNC4, reg);
+		writel((readl(crt_membase + PINMUX_BASE + ISO_PFUNC4) & 0xf) | 0xAF75EEB0,
+		       crt_membase + PINMUX_BASE + ISO_PFUNC4);
 
-		regmap_write(pinctrl_base, ISO_PFUNC5, 0x5EEBDD7B);
+		writel(0x5EEBDD7B, crt_membase + PINMUX_BASE + ISO_PFUNC5);
 
-		regmap_read(pinctrl_base, ISO_PFUNC6, &reg);
-		reg = (reg & 0xffffffc0) | 0x37;
-		regmap_write(pinctrl_base, ISO_PFUNC6, reg);
+		writel((readl(crt_membase + PINMUX_BASE + ISO_PFUNC6) & 0xffffffc0) | 0x37,
+		       crt_membase + PINMUX_BASE + ISO_PFUNC6);
 
 		return;
 	}
@@ -225,59 +200,14 @@ static void rtk_sdhci_pad_driving_configure(struct sdhci_host *host)
 
 }
 
-static void rtk_sdhci_set_ssc_v2(struct sdhci_host *host)
-{
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct regmap *crt_base = rtk_host->crt_base;
-	void __iomem *wrap_base = rtk_host->wrap_base;
-	u32 reg;
-
-	regmap_read(crt_base, SYS_PLL_SDIO1, &reg);
-	reg &= ~PHRT0;
-	regmap_write(crt_base, SYS_PLL_SDIO1, reg);
-
-	regmap_read(crt_base, SYS_PLL_SDIO2, &reg);
-	reg &= ~(PLL_V2_SSC_OC_EN | PLL_V2_SSC_FLAG_INIT);
-	regmap_write(crt_base, SYS_PLL_SDIO2, reg);
-
-	reg = readl(wrap_base + SDHCI_RTK_SSC2);
-	reg &= ~GRAN_SET;
-	reg |= FIELD_PREP(GRAN_SET, GRAN_SET_208M_1PERCENT);
-	writel(reg, wrap_base + SDHCI_RTK_SSC2);
-
-	reg = readl(wrap_base + SDHCI_RTK_SSC1);
-	reg &= ~(NCODE_SSC | FCODE_SSC | DOT_GRAN | EN_SSC);
-	reg |= FIELD_PREP(NCODE_SSC, NCODE_SSC_INIT_VALUE) |
-	       FIELD_PREP(FCODE_SSC, FCODE_SSC_208M_1PERCENT) |
-	       FIELD_PREP(DOT_GRAN, DOT_GRAN_INIT_VALUE) | EN_SSC;
-	writel(reg, wrap_base + SDHCI_RTK_SSC1);
-
-	regmap_read(crt_base, SYS_PLL_SDIO2, &reg);
-	reg |= PLL_V2_SSC_OC_EN | PLL_V2_SSC_FLAG_INIT;
-	regmap_write(crt_base, SYS_PLL_SDIO2, reg);
-
-	regmap_read(crt_base, SYS_PLL_SDIO2, &reg);
-	reg &= ~PLL_V2_SSC_OC_EN;
-	regmap_write(crt_base, SYS_PLL_SDIO2, reg);
-
-	regmap_read(crt_base, SYS_PLL_SDIO1, &reg);
-	reg |= PHRT0;
-	regmap_write(crt_base, SYS_PLL_SDIO1, reg);
-	udelay(100);
-}
-
 static void rtk_sdhci_pll_configure(struct sdhci_host *host, u32 pll, int execute_tuning)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct regmap *crt_base = rtk_host->crt_base;
-	u32 val, reg;
+	void __iomem *crt_membase = rtk_host->crt_membase;
+	u32 val;
 
-	regmap_read(crt_base, SYS_PLL_SDIO4, &reg);
-	reg &= ~SSC_RSTB;
-	reg |= SSC_PLL_RSTB | SSC_PLL_POW;
-	regmap_write(crt_base, SYS_PLL_SDIO4, reg);
+	writel(SSC_PLL_RSTB | SSC_PLL_POW, crt_membase + SYS_PLL_SDIO4);
 
 	val = FIELD_PREP(REG_TUNE11, REG_TUNE11_1V9) |
 	      FIELD_PREP(SSCPLL_CS1, SSCPLL_CS1_INIT_VALUE) |
@@ -296,90 +226,15 @@ static void rtk_sdhci_pll_configure(struct sdhci_host *host, u32 pll, int execut
 
 	/* The SSC shouldn't enable when execute tuning */
 	if (!execute_tuning)
-		regmap_write(crt_base, SYS_PLL_SDIO2, val);
+		writel(val, crt_membase + SYS_PLL_SDIO2);
 
-	regmap_write(crt_base, SYS_PLL_SDIO3, pll);
+	writel(pll, crt_membase + SYS_PLL_SDIO3);
 
 	mdelay(2);
 
-	regmap_update_bits(crt_base, SYS_PLL_SDIO4, SSC_RSTB, SSC_RSTB);
+	writel(SSC_RSTB | SSC_PLL_RSTB | SSC_PLL_POW, crt_membase + SYS_PLL_SDIO4);
 
 	udelay(200);
-}
-
-static void rtk_sdhci_pll_configure_v2(struct sdhci_host *host, u32 pll, int execute_tuning)
-{
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	const struct sdhci_rtk_soc_data *soc_data = rtk_host->soc_data;
-	struct regmap *crt_base = rtk_host->crt_base;
-	u32 rtkquirks = soc_data->rtkquirks;
-	u32 reg, sscpll;
-
-	regmap_read(crt_base, SYS_PLL_SDIO1, &reg);
-	reg &= ~PHRT0;
-	regmap_write(crt_base, SYS_PLL_SDIO1, reg);
-
-	regmap_write(crt_base, SYS_PLL_SDIO3, pll);
-
-	regmap_read(crt_base, SYS_PLL_SDIO2, &sscpll);
-	sscpll &= ~(PLL_V2_PI_IBSELH | PLL_V2_SSC_PLL_ICP |
-		    PLL_V2_SSC_PLL_RS | PLL_V2_SSC_DIV_EXT_F);
-
-	switch (FIELD_GET(PLL_V2_SSC_DIV_N, pll)) {
-	case PLL_V2_SSC_DIV_N_208M:
-		sscpll |= FIELD_PREP(PLL_V2_PI_IBSELH, PLL_V2_PI_IBSELH_150_255M) |
-			  FIELD_PREP(PLL_V2_SSC_PLL_ICP, PLL_V2_SSC_PLL_ICP_INIT_VALUE) |
-			  FIELD_PREP(PLL_V2_SSC_PLL_RS, PLL_V2_SSC_PLL_RS_8K) |
-			  FIELD_PREP(PLL_V2_SSC_DIV_EXT_F, PLL_V2_SSC_DIV_EXT_F_208M);
-		break;
-	case PLL_V2_SSC_DIV_N_200M:
-		sscpll |= FIELD_PREP(PLL_V2_PI_IBSELH, PLL_V2_PI_IBSELH_150_255M) |
-			  FIELD_PREP(PLL_V2_SSC_PLL_ICP, PLL_V2_SSC_PLL_ICP_INIT_VALUE) |
-			  FIELD_PREP(PLL_V2_SSC_PLL_RS, PLL_V2_SSC_PLL_RS_8K) |
-			  FIELD_PREP(PLL_V2_SSC_DIV_EXT_F, PLL_V2_SSC_DIV_EXT_F_200M);
-		break;
-	case PLL_V2_SSC_DIV_N_100M:
-		sscpll |= FIELD_PREP(PLL_V2_PI_IBSELH, PLL_V2_PI_IBSELH_80_150M) |
-			  FIELD_PREP(PLL_V2_SSC_PLL_ICP, PLL_V2_SSC_PLL_ICP_INIT_VALUE) |
-			  FIELD_PREP(PLL_V2_SSC_PLL_RS, PLL_V2_SSC_PLL_RS_6K) |
-			  FIELD_PREP(PLL_V2_SSC_DIV_EXT_F, PLL_V2_SSC_DIV_EXT_F_100M);
-		break;
-	}
-
-	regmap_write(crt_base, SYS_PLL_SDIO2, sscpll);
-	mdelay(2);
-
-	regmap_read(crt_base, SYS_PLL_SDIO4, &reg);
-	reg &= ~SSC_PLL_POW;
-	reg |= SSC_RSTB | SSC_PLL_RSTB;
-	regmap_write(crt_base, SYS_PLL_SDIO4, reg);
-
-	regmap_read(crt_base, SYS_PLL_SDIO2, &reg);
-	reg |= PLL_V2_SSC_OC_EN;
-	regmap_write(crt_base, SYS_PLL_SDIO2, reg);
-
-	regmap_read(crt_base, SYS_PLL_SDIO4, &reg);
-	reg |= SSC_PLL_POW;
-	regmap_write(crt_base, SYS_PLL_SDIO4, reg);
-	udelay(200);
-
-	regmap_read(crt_base, SYS_PLL_SDIO2, &reg);
-	reg &= ~PLL_V2_SSC_OC_EN;
-	regmap_write(crt_base, SYS_PLL_SDIO2, reg);
-
-	regmap_read(crt_base, SYS_PLL_SDIO1, &reg);
-	reg |= PHRT0;
-	regmap_write(crt_base, SYS_PLL_SDIO1, reg);
-	udelay(100);
-
-	if (!execute_tuning && !(rtkquirks & RTKQUIRK_SSC_CLK_JITTER)) {
-		if (FIELD_GET(PLL_V2_SSC_DIV_N, pll) == PLL_V2_SSC_DIV_N_208M) {
-			dev_err(mmc_dev(host->mmc), "%s enable ssc function\n", __func__);
-			rtk_sdhci_set_ssc_v2(host);
-		}
-	}
-
 }
 
 static void rtk_sdhci_sd_slot_init(struct sdhci_host *host)
@@ -387,11 +242,17 @@ static void rtk_sdhci_sd_slot_init(struct sdhci_host *host)
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
 	struct device *dev = mmc_dev(host->mmc);
+	void __iomem *crt_membase = rtk_host->crt_membase;
 
 	if (soc_device_match(rtk_soc_stark)) {
 
 		if (gpiod_direction_output(rtk_host->sd_pwr_gpio, 0))
 			dev_err(dev, "fail to enable sd power");
+
+		writel(readl(crt_membase + PINMUX_BASE + PINMUX_SDIO_PAD) | SDIO_PAD_PWR_EN,
+		       crt_membase + PINMUX_BASE + PINMUX_SDIO_PAD);
+
+		mdelay(10);
 
 		if (host->quirks2 & SDHCI_QUIRK2_NO_1_8_V)
 			rtk_sdhci_sd_pad_power_ctrl(host, MMC_SIGNAL_VOLTAGE_330);
@@ -404,30 +265,20 @@ static void sdhci_rtk_hw_init(struct sdhci_host *host)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	void __iomem *wrap_base = rtk_host->wrap_base;
-	struct regmap *crt_base = rtk_host->crt_base;
-	struct regmap *iso_base = rtk_host->iso_base;
-	struct regmap *isosys_base = rtk_host->isosys_base;
+	void __iomem *crt_membase = rtk_host->crt_membase;
+	u32 val;
 
-	u32 reg, val, pwr_cut;
-
-	if (soc_device_match(rtk_soc_thor)) {
-		regmap_update_bits(crt_base, SYS_PLL_SDIO1, BIAS_EN, BIAS_EN);
-		regmap_update_bits(crt_base, SYS_PLL_SDIO2, SSCLDO_EN, SSCLDO_EN);
-	} else if (soc_device_match(rtk_soc_hank)) {
-		regmap_update_bits(iso_base, ISO_RESERVED, SDIO_SSCLDO_EN |
-				   SDIO_BIAS_EN, SDIO_SSCLDO_EN | SDIO_BIAS_EN);
-	} else {
-		regmap_update_bits(iso_base, ISO_CTRL_1, SDIO_SSCLDO_EN |
-				   SDIO_BIAS_EN, SDIO_SSCLDO_EN | SDIO_BIAS_EN);
+	if (soc_device_match(rtk_soc_thor_a01)) {
+		writel(readl(crt_membase + SYS_PLL_SDIO1) | BIAS_EN, crt_membase + SYS_PLL_SDIO1);
+		writel(readl(crt_membase + SYS_PLL_SDIO2) | SSCLDO_EN, crt_membase + SYS_PLL_SDIO2);
+	} else if (soc_device_match(rtk_soc_groot) || soc_device_match(rtk_soc_hank)) {
+		writel(readl(crt_membase + ISO_BASE + ISO_RESERVED) | SDIO_SSCLDO_EN | SDIO_BIAS_EN,
+		       crt_membase + ISO_BASE + ISO_RESERVED);
+	} else if (soc_device_match(rtk_soc_parker) || soc_device_match(rtk_soc_stark)) {
+		writel(readl(crt_membase + ISO_BASE + ISO_CTRL_1) | SDIO_SSCLDO_EN | SDIO_BIAS_EN,
+		       crt_membase + ISO_BASE + ISO_CTRL_1);
 	}
 	udelay(200);
-
-	if (soc_device_match(rtk_soc_power_cut)) {
-		regmap_read(isosys_base, ISO_SYS_POWER_CTRL, &pwr_cut);
-		if (pwr_cut & ISO_PHY)
-			regmap_update_bits(isosys_base, ISO_SYS_POWER_CTRL, ISO_PHY, 0);
-	}
 
 	if (rtk_host->location == SDIO_LOC_0) {
 		rtk_sdhci_sd_slot_init(host);
@@ -438,32 +289,17 @@ static void sdhci_rtk_hw_init(struct sdhci_host *host)
 			pinctrl_select_state(rtk_host->pinctrl, rtk_host->pins_vsel_1v8);
 	}
 
-	regmap_read(crt_base, SYS_PLL_SDIO3, &val);
+	val = FIELD_PREP(SSC_TBASE, SSC_TBASE_INIT_VALUE) |
+	      FIELD_PREP(SSC_STEP_IN, SSC_STEP_IN_INIT_VALUE) |
+	      FIELD_PREP(SSC_DIV_N, SSC_DIV_N_200M);
+	rtk_sdhci_pll_configure(host, val, 0);
 
-	if (soc_device_match(rtk_soc_pll_v2)) {
-		val &= ~PLL_V2_SSC_DIV_N;
-		val |= FIELD_PREP(PLL_V2_SSC_DIV_N, PLL_V2_SSC_DIV_N_200M);
-		rtk_sdhci_pll_configure_v2(host, val, 0);
-	} else {
-		val = FIELD_PREP(SSC_TBASE, SSC_TBASE_INIT_VALUE) |
-		      FIELD_PREP(SSC_STEP_IN, SSC_STEP_IN_INIT_VALUE) |
-		      FIELD_PREP(SSC_DIV_N, SSC_DIV_N_200M);
-		rtk_sdhci_pll_configure(host, val, 0);
-	}
+	if (soc_device_match(rtk_soc_groot) || soc_device_match(rtk_soc_hank))
+		writel(readl(crt_membase + SDIO_WRAP_BASE + SDIO_RTK_DUMMY_SYS1) | BIT(31),
+		       crt_membase + SDIO_WRAP_BASE + SDIO_RTK_DUMMY_SYS1);
 
-	if (soc_device_match(rtk_soc_hank)) {
-		reg = readl(wrap_base + SDIO_RTK_DUMMY_SYS1);
-		reg |= BIT(31);
-		writel(reg, wrap_base + SDIO_RTK_DUMMY_SYS1);
-	}
-
-	reg = readl(wrap_base + SDIO_RTK_ISREN);
-	reg |= WRITE_DATA | INT4EN;
-	writel(reg, wrap_base + SDIO_RTK_ISREN);
-
-	reg = readl(wrap_base + SDIO_RTK_CTL);
-	reg |= SUSPEND_N;
-	writel(reg, wrap_base + SDIO_RTK_CTL);
+	writel(WRITE_DATA | INT4EN, crt_membase + SDIO_WRAP_BASE + SDIO_RTK_ISREN);
+	writel(SUSPEND_N, crt_membase + SDIO_WRAP_BASE + SDIO_RTK_CTL);
 }
 
 static void rtk_sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
@@ -480,7 +316,7 @@ static void rtk_sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	struct sdhci_host *host = mmc_priv(mmc);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	void __iomem *wrap_base = rtk_host->wrap_base;
+	void __iomem *crt_membase = rtk_host->crt_membase;
 
 	sdhci_set_ios(mmc, ios);
 
@@ -489,33 +325,23 @@ static void rtk_sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	/* enlarge wait time for data */
 	if ((host->timing == MMC_TIMING_UHS_SDR104) &&
 	    soc_device_match(rtk_soc_thor))
-		writel(0x1d, wrap_base + SDIO_RTK_DUMMY_SYS1);
+		writel(0x1d, crt_membase + SDIO_WRAP_BASE + SDIO_RTK_DUMMY_SYS1);
 }
 
 static void rtk_sdhci_reset(struct sdhci_host *host, u8 mask)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	void __iomem *wrap_base = rtk_host->wrap_base;
-	u32 reg;
+	void __iomem *crt_membase = rtk_host->crt_membase;
 
-	if (soc_device_match(rtk_soc_kent)) {
-		sdhci_reset(host, mask);
-		return;
-	}
-
-	reg = readl(wrap_base + SDIO_RTK_CTL);
-	reg |= L4_GATED_DISABLE;
-	writel(reg, wrap_base + SDIO_RTK_CTL);
+	writel(SUSPEND_N | L4_GATED_DISABLE, crt_membase + SDIO_WRAP_BASE + SDIO_RTK_CTL);
 
 	if (mask & SDHCI_RESET_DATA)
 		sdhci_writel(host, SDHCI_INT_DATA_END, SDHCI_INT_STATUS);
 
 	sdhci_reset(host, mask);
 
-	reg = readl(wrap_base + SDIO_RTK_CTL);
-	reg &= ~L4_GATED_DISABLE;
-	writel(reg, wrap_base + SDIO_RTK_CTL);
+	writel(SUSPEND_N, crt_membase + SDIO_WRAP_BASE + SDIO_RTK_CTL);
 }
 
 static u32 rtk_sdhci_irq(struct sdhci_host *host, u32 intmask)
@@ -596,7 +422,7 @@ static int rtk_sdhci_change_phase(struct sdhci_host *host, u8 sample_point, int 
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct regmap *crt_base = rtk_host->crt_base;
+	void __iomem *crt_membase = rtk_host->crt_membase;
 	u32 reg;
 	u16 clk = 0;
 
@@ -604,11 +430,9 @@ static int rtk_sdhci_change_phase(struct sdhci_host *host, u8 sample_point, int 
 	clk &= ~SDHCI_CLOCK_CARD_EN;
 	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
 	/* To disable reset signal */
-	regmap_read(crt_base, SYS_PLL_SDIO1, &reg);
-	reg &= ~PHRT0;
-	regmap_write(crt_base, SYS_PLL_SDIO1, reg);
+	writel(readl(crt_membase + SYS_PLL_SDIO1) & ~PHRT0, crt_membase + SYS_PLL_SDIO1);
 
-	regmap_read(crt_base, SYS_PLL_SDIO1, &reg);
+	reg = readl(crt_membase + SYS_PLL_SDIO1);
 
 	if (tx) {
 		reg &= ~PHSEL0_MASK;
@@ -618,11 +442,9 @@ static int rtk_sdhci_change_phase(struct sdhci_host *host, u8 sample_point, int 
 		reg |= (sample_point << PHSEL1_SHIFT);
 	}
 
-	regmap_write(crt_base, SYS_PLL_SDIO1, reg);
+	writel(reg, crt_membase + SYS_PLL_SDIO1);
 	/* re-enable reset signal */
-	regmap_read(crt_base, SYS_PLL_SDIO1, &reg);
-	reg |= PHRT0;
-	regmap_write(crt_base, SYS_PLL_SDIO1, reg);
+	writel(readl(crt_membase + SYS_PLL_SDIO1) | PHRT0, crt_membase + SYS_PLL_SDIO1);
 	udelay(100);
 
 	clk = sdhci_readw(host, SDHCI_CLOCK_CONTROL);
@@ -669,13 +491,15 @@ static u8 rtk_sdhci_search_final_phase(struct sdhci_host *host, u32 phase_map, i
 		start += len ? len : 1;
 	}
 
-	if (len_final > MINIMUM_CONTINUE_LENGTH)
+	if (len_final == MAXIMUM_CONTINUE_LENGTH)
+		final_phase = DEFAULT_PHASE;
+	else if (len_final > MINIMUM_CONTINUE_LENGTH)
 		final_phase = (start_final + len_final / 2) % MAX_PHASE;
 	else
 		final_phase = 0xFF;
 
-	dev_err(mmc_dev(host->mmc), "%s phase: [map:%08x] [maxlen:%d] [final:%d]\n",
-		tx ? "tx" : "rx", phase_map, len_final, final_phase);
+	pr_err("%s phase: [map:%08x] [maxlen:%d] [final:%d]\n",
+	       tx ? "tx" : "rx", phase_map, len_final, final_phase);
 
 	return final_phase;
 }
@@ -700,10 +524,13 @@ static int rtk_sdhci_tuning(struct sdhci_host *host, u32 opcode, int tx)
 	for (i = 0; i < TUNING_CNT; i++)
 		phase_map &= raw_phase_map[i];
 
+	pr_err("%s %s phase_map = 0x%08x\n", __func__, tx ? "TX" : "RX", phase_map);
+
 	if (phase_map) {
 		final_phase = rtk_sdhci_search_final_phase(host, phase_map, tx);
+		pr_err("%s final phase = 0x%08x\n", __func__, final_phase);
 		if (final_phase == 0xFF) {
-			pr_err("%s final phase = 0x%08x invalid\n", __func__, final_phase);
+			pr_err("%s final phase = 0x%08x\n", __func__, final_phase);
 			return -EINVAL;
 		}
 		err = rtk_sdhci_change_phase(host, final_phase, tx);
@@ -721,65 +548,34 @@ static void rtk_sdhci_down_clock(struct sdhci_host *host)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct regmap *crt_base = rtk_host->crt_base;
+	void __iomem *crt_membase = rtk_host->crt_membase;
 	u32 reg, ssc_div_n;
 
-	regmap_read(crt_base, SYS_PLL_SDIO3, &reg);
+	reg = readl(crt_membase + SYS_PLL_SDIO3);
 
-	if (soc_device_match(rtk_soc_pll_v2)) {
-		switch (FIELD_GET(PLL_V2_SSC_DIV_N, reg)) {
-		case PLL_V2_SSC_DIV_N_208M:
-			reg &= ~PLL_V2_SSC_DIV_N;
-			reg |= FIELD_PREP(PLL_V2_SSC_DIV_N, PLL_V2_SSC_DIV_N_200M);
-			rtk_sdhci_pll_configure_v2(host, reg, 1);
-			dev_err(mmc_dev(host->mmc), "%s down clock to 200M\n", __func__);
-			break;
-		case PLL_V2_SSC_DIV_N_200M:
-			reg &= ~PLL_V2_SSC_DIV_N;
-			reg |= FIELD_PREP(PLL_V2_SSC_DIV_N, PLL_V2_SSC_DIV_N_100M);
-			rtk_sdhci_pll_configure_v2(host, reg, 1);
-			dev_err(mmc_dev(host->mmc), "%s down clock to 100M\n", __func__);
-			break;
-		case PLL_V2_SSC_DIV_N_100M:
-			reg &= ~PLL_V2_SSC_DIV_N;
-			reg |= FIELD_PREP(PLL_V2_SSC_DIV_N, PLL_V2_SSC_DIV_N_50M);
-			rtk_sdhci_pll_configure_v2(host, reg, 1);
-			break;
-		}
-	} else {
-		ssc_div_n = (reg & 0x03FF0000) >> 16;
-		/* When PLL set to 96, may interference wifi 2.4Ghz */
-		if (ssc_div_n == 158)
-			ssc_div_n = ssc_div_n - 7;
+	ssc_div_n = (reg & 0x03FF0000) >> 16;
+	/* When PLL set to 96, may interference wifi 2.4Ghz */
+	if (ssc_div_n == 158)
+		ssc_div_n = ssc_div_n - 7;
 
-		reg = ((reg & (~0x3FF0000)) | ((ssc_div_n - 7) << 16));
-		rtk_sdhci_pll_configure(host, reg, 1);
-	}
+	reg = ((reg & (~0x3FF0000)) | ((ssc_div_n - 7) << 16));
+	rtk_sdhci_pll_configure(host, reg, 1);
 }
 
 static int rtk_sdhci_execute_tuning(struct sdhci_host *host, u32 opcode)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	const struct sdhci_rtk_soc_data *soc_data = rtk_host->soc_data;
-	struct regmap *crt_base = rtk_host->crt_base;
-	void __iomem *wrap_base = rtk_host->wrap_base;
-	u32 rtkquirks = soc_data->rtkquirks;
-	u32 reg, tx_opcode;
+	void __iomem *crt_membase = rtk_host->crt_membase;
+	u32 reg, tx_opcode, ssc_div_n;
 	int ret = 0;
 
 	pr_err("%s : Execute Clock Phase Tuning\n", __func__);
 
 	/* To disable the SSC during the phase tuning process. */
-	if (soc_device_match(rtk_soc_pll_v2)) {
-		reg = readl(wrap_base + SDHCI_RTK_SSC1);
-		reg &= ~EN_SSC;
-		writel(reg, wrap_base + SDHCI_RTK_SSC1);
-	} else {
-		regmap_read(crt_base, SYS_PLL_SDIO2, &reg);
-		reg &= ~SSC_DEPTH;
-		regmap_write(crt_base, SYS_PLL_SDIO2, reg);
-	}
+	reg = readl(crt_membase + SYS_PLL_SDIO2);
+	reg &= ~SSC_DEPTH;
+	writel(reg, crt_membase + SYS_PLL_SDIO2);
 
 	if (mmc_card_sdio(host->mmc->card))
 		tx_opcode = SD_IO_RW_DIRECT;
@@ -793,10 +589,10 @@ static int rtk_sdhci_execute_tuning(struct sdhci_host *host, u32 opcode)
 	do {
 		ret = rtk_sdhci_tuning(host, MMC_SEND_TUNING_BLOCK, 0);
 
+		reg = readl(crt_membase + SYS_PLL_SDIO3);
+		ssc_div_n = FIELD_GET(SSC_DIV_N, reg);
 		if (ret) {
-			regmap_read(crt_base, SYS_PLL_SDIO3, &reg);
-			if ((FIELD_GET(SSC_DIV_N, reg) < SSC_DIV_N_50M) ||
-			    (FIELD_GET(PLL_V2_SSC_DIV_N, reg) == PLL_V2_SSC_DIV_N_50M)) {
+			if (ssc_div_n <= 100) {
 				pr_err("%s: Tuning RX fail\n", __func__);
 				return ret;
 			}
@@ -804,29 +600,11 @@ static int rtk_sdhci_execute_tuning(struct sdhci_host *host, u32 opcode)
 		}
 	} while (ret);
 
-	if (!(rtkquirks & RTKQUIRK_SSC_CLK_JITTER)) {
-		if (soc_device_match(rtk_soc_pll_v2)) {
-			regmap_read(crt_base, SYS_PLL_SDIO3, &reg);
-			if (FIELD_GET(PLL_V2_SSC_DIV_N, reg) == PLL_V2_SSC_DIV_N_208M) {
-				reg = readl(wrap_base + SDHCI_RTK_SSC1);
-				reg |= EN_SSC;
-				writel(reg, wrap_base + SDHCI_RTK_SSC1);
-			}
-		} else {
-			regmap_read(crt_base, SYS_PLL_SDIO2, &reg);
-			reg |= FIELD_PREP(SSC_DEPTH, SSC_DEPTH_1_N);
-			regmap_write(crt_base, SYS_PLL_SDIO2, reg);
-		}
-	}
+	reg = readl(crt_membase + SYS_PLL_SDIO2);
+	reg |= FIELD_PREP(SSC_DEPTH, SSC_DEPTH_1_N);
+	writel(reg, crt_membase + SYS_PLL_SDIO2);
 
-	regmap_read(crt_base, SYS_PLL_SDIO3, &reg);
-
-	if (soc_device_match(rtk_soc_pll_v2))
-		dev_info(mmc_dev(host->mmc), "after tuning, current pll = %lx\n",
-			 FIELD_GET(PLL_V2_SSC_DIV_N, reg));
-	else
-		dev_info(mmc_dev(host->mmc), "after tuning, current pll = %lx\n",
-			 FIELD_GET(SSC_DIV_N, reg));
+	pr_err("After tuning, current SDIO PLL = %x\n", ssc_div_n);
 
 	return 0;
 }
@@ -846,9 +624,13 @@ static void rtk_sdhci_set_uhs_signaling(struct sdhci_host *host, unsigned timing
 static void rtk_sdhci_adma_write_desc(struct sdhci_host *host, void **desc, dma_addr_t addr,
 				      int len, unsigned int cmd)
 {
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
+	const struct sdhci_rtk_soc_data *soc_data = rtk_host->soc_data;
+	u32 rtkquirks = soc_data->rtkquirks;
 	int tmplen, offset;
 
-	if (likely(!soc_device_match(rtk_soc_axi_boundary) || !len || BOUNDARY_OK(addr, len))) {
+	if (likely(!(rtkquirks & RTKQUIRK_AXI_BURST_BOUNDARY) || !len || BOUNDARY_OK(addr, len))) {
 		sdhci_adma_write_desc(host, desc, addr, len, cmd);
 		return;
 	}
@@ -917,17 +699,13 @@ static struct sdhci_rtk_soc_data rtd1619b_soc_data = {
 
 static struct sdhci_rtk_soc_data rtd1319d_soc_data = {
 	.pdata = &sdhci_rtk_sdio_pdata,
-};
-
-static struct sdhci_rtk_soc_data rtk_soc_data = {
-	.pdata = &sdhci_rtk_sdio_pdata,
+	.rtkquirks = RTKQUIRK_AXI_BURST_BOUNDARY,
 };
 
 static const struct of_device_id sdhci_rtk_dt_match[] = {
 	{.compatible = "realtek,rtd1319-sdio", .data = &rtd1319_soc_data},
 	{.compatible = "realtek,rtd1619b-sdio", .data = &rtd1619b_soc_data},
 	{.compatible = "realtek,rtd1319d-sdio", .data = &rtd1319d_soc_data},
-	{.compatible = "realtek,rtd1625-sdio", .data = &rtk_soc_data},
 	{}
 };
 MODULE_DEVICE_TABLE(of, sdhci_rtk_dt_match);
@@ -960,42 +738,9 @@ static int sdhci_rtk_probe(struct platform_device *pdev)
 	rtk_host->preset_pll = 0;
 	rtk_host->location = SDIO_LOC_1;
 
-	rtk_host->wrap_base = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(rtk_host->wrap_base)) {
-		ret = PTR_ERR(rtk_host->wrap_base);
-		dev_err(&pdev->dev, "couldn't get wrapper control register base address\n");
-		goto err;
-	}
-
-	rtk_host->crt_base = syscon_regmap_lookup_by_phandle(node, "realtek,crt");
-	if (IS_ERR(rtk_host->crt_base)) {
-		ret = PTR_ERR(rtk_host->crt_base);
-		dev_err(&pdev->dev, "couldn't get crt register base address\n");
-		goto err;
-	}
-
-	rtk_host->iso_base = syscon_regmap_lookup_by_phandle(node, "realtek,iso");
-	if (IS_ERR(rtk_host->iso_base)) {
-		ret = PTR_ERR(rtk_host->iso_base);
-		dev_err(&pdev->dev, "couldn't get iso register base address\n");
-		goto err;
-	}
-
-	rtk_host->pinctrl_base = syscon_regmap_lookup_by_phandle(node, "realtek,pinctrl");
-	if (IS_ERR(rtk_host->pinctrl_base)) {
-		ret = PTR_ERR(rtk_host->pinctrl_base);
-		dev_err(&pdev->dev, "couldn't get pin control register base address\n");
-		goto err;
-	}
-
-	if (of_device_is_compatible(node, "realtek,rtd1625-sdio")) {
-		rtk_host->isosys_base = syscon_regmap_lookup_by_phandle(node, "realtek,isosys");
-		if (IS_ERR(rtk_host->isosys_base)) {
-			ret = PTR_ERR(rtk_host->isosys_base);
-			dev_info(&pdev->dev, "couldn't get iso sys register base address\n");
-			goto err;
-		}
-	}
+	rtk_host->crt_membase = of_iomap(node, 1);
+	if (!rtk_host->crt_membase)
+		return -ENOMEM;
 
 	sd_node = of_get_compatible_child(node, "sd-slot");
 	if (sd_node) {
@@ -1004,22 +749,7 @@ static int sdhci_rtk_probe(struct platform_device *pdev)
 		rtk_host->sd_pwr_gpio = devm_gpiod_get(&pdev->dev, "sd-power", GPIOD_OUT_LOW);
 		if (IS_ERR(rtk_host->sd_pwr_gpio))
 			dev_err(&pdev->dev, "%s can't request power gpio\n", __func__);
-
-		of_node_put(sd_node);
 	}
-
-	rtk_host->dev_pwr = devm_regulator_get_optional(&pdev->dev, "device-power");
-	if (IS_ERR(rtk_host->dev_pwr)) {
-		if (PTR_ERR(rtk_host->dev_pwr) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-	} else {
-		ret = regulator_enable(rtk_host->dev_pwr);
-		if (ret)
-			dev_err(&pdev->dev, "failed to enable SDIO device power\n");
-	}
-
-	if (device_property_read_bool(&pdev->dev, "wifi-rst-shared"))
-		regmap_update_bits(rtk_host->iso_base, ISO_USB_TYPEC_CTRL_CC1, PLR_EN, 0);
 
 	rtk_host->wifi_rst = devm_gpiod_get(&pdev->dev, "wifi-rst", GPIOD_OUT_LOW);
 	if (IS_ERR(rtk_host->wifi_rst))
@@ -1114,8 +844,6 @@ err_sdio_clk:
 	clk_disable_unprepare(rtk_host->clk_en_sdio_ip);
 	clk_disable_unprepare(rtk_host->clk_en_sdio);
 	sdhci_pltfm_free(pdev);
-err:
-	dev_err(&pdev->dev, "%s failed %d\n", __func__, ret);
 	return ret;
 }
 
@@ -1145,11 +873,11 @@ static int __maybe_unused sdhci_rtk_suspend(struct device *dev)
 	struct sdhci_host *host = dev_get_drvdata(dev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct regmap *crt_base = rtk_host->crt_base;
+	void __iomem *crt_membase = rtk_host->crt_membase;
 
 	pr_err("[SDIO] %s start\n", __func__);
 
-	regmap_read(crt_base, SYS_PLL_SDIO1, &rtk_host->preset_pll);
+	rtk_host->preset_pll = readl(crt_membase + SYS_PLL_SDIO1);
 
 	sdhci_suspend_host(host);
 	reset_control_assert(rtk_host->rstc_sdio);
@@ -1165,7 +893,7 @@ static int __maybe_unused sdhci_rtk_resume(struct device *dev)
 	struct sdhci_host *host = dev_get_drvdata(dev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtk *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct regmap *crt_base = rtk_host->crt_base;
+	void __iomem *crt_membase = rtk_host->crt_membase;
 	u8 reg;
 
 	host->clock = 0;
@@ -1179,7 +907,7 @@ static int __maybe_unused sdhci_rtk_resume(struct device *dev)
 	sdhci_rtk_hw_init(host);
 
 	if ((host->timing == MMC_TIMING_UHS_SDR50) || (host->timing == MMC_TIMING_UHS_SDR104))
-		regmap_write(crt_base, SYS_PLL_SDIO1, rtk_host->preset_pll);
+		writel(rtk_host->preset_pll, crt_membase + SYS_PLL_SDIO1);
 
 	reg = sdhci_readb(host, SDHCI_POWER_CONTROL);
 	reg |= SDHCI_POWER_ON | SDHCI_POWER_330;

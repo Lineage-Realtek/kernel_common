@@ -11,8 +11,10 @@
 #define MAX_PHASE				32
 #define TUNING_CNT				3
 #define MINIMUM_CONTINUE_LENGTH			16
-/* Controller clock has large jitter when SSC enable */
-#define RTKQUIRK_SSC_CLK_JITTER			BIT(0)
+#define MAXIMUM_CONTINUE_LENGTH			32
+#define DEFAULT_PHASE				0
+/* Controller needs to take care AXI burst boundary */
+#define RTKQUIRK_AXI_BURST_BOUNDARY		BIT(0)
 
 #define SDIO_LOC_0				0
 #define SDIO_LOC_1				1
@@ -88,14 +90,16 @@
 #define  REG_SEL3318_3V3			0x1
 #define  REG_SEL3318_0V				0x2
 #define  REG_SEL3318_1V8			0x3
-/* ISO register */
+/* ISO register (offset from CRT base) */
+#define ISO_BASE				0x7000
 #define ISO_RESERVED				0x64
 #define ISO_CTRL_1				0xC4
 #define  SDIO_SSCLDO_EN				BIT(4)
 #define  SDIO_BIAS_EN				BIT(5)
 #define ISO_USB_TYPEC_CTRL_CC1			0x220
 #define  PLR_EN					BIT(29)
-/* SDIO wrapper control register */
+/* SDIO wrapper control register (offset from CRT base) */
+#define SDIO_WRAP_BASE				0x10A00
 #define SDHCI_RTK_SSC1				0x04
 #define  NCODE_SSC				GENMASK(7, 0)
 #define  NCODE_SSC_100M				0x0C
@@ -126,7 +130,10 @@
 /* ISO SYS register */
 #define ISO_SYS_POWER_CTRL			0x300
 #define  ISO_PHY				BIT(21)
-/* Testmux register */
+/* Testmux register (offset from CRT base) */
+#define PINMUX_BASE				0x4E000
+#define PINMUX_SDIO_PAD				0x80
+#define  SDIO_PAD_PWR_EN			BIT(14)
 #define ISO_PFUNC4				0x24
 #define ISO_PFUNC5				0x28
 #define ISO_PFUNC6				0x2C
