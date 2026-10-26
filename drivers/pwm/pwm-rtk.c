@@ -45,37 +45,18 @@
 #define RTK_PWM_V2_CD_MASK	(0xff)
 #define RTK_PWM_V2_CSD_MASK	(0x1f)
 
-/* PWM V3 */
-#define RTK_ADDR_PWM0_V3	(0x0)
-#define RTK_ADDR_PWM1_V3	(0x4)
-#define RTK_ADDR_PWM2_V3	(0x8)
-#define RTK_ADDR_PWM3_V3	(0xc)
-#define RTK_ADDR_PWM4_V3	(0x10)
-#define RTK_ADDR_PWM5_V3	(0x14)
-#define RTK_ADDR_PWM6_V3	(0x18)
-
-#define RTK_PWM_V3_OCD_SHIFT	(8)
-#define RTK_PWM_V3_CD_SHIFT	(0)
-#define RTK_PWM_V3_CSD_SHIFT	(16)
-#define RTK_PWM_V3_EN_SHIFT	(31)
-
-#define RTK_PWM_V3_OCD_MASK	(0xff)
-#define RTK_PWM_V3_CD_MASK	(0xff)
-#define RTK_PWM_V3_CSD_MASK	(0x1f)
-
 /* COMMON */
 #define RTK_PWM_OCD_DEFAULT	(0xff)
 #define RTK_PWM_CD_DEFAULT	(0x1)
 #define RTK_PWM_CSD_DEFAULT	(0x1)
 
 #define NUM_PWM			(4)
-#define NUM_PWM_V3		(7)
 #define RTK_27MHZ		27000000
 #define RTK_1SEC_TO_NS		1000000000
 
 #define RTK_PWM_V1_UPD		0x54
 
-#define STR_LEN			(16)
+#define DEV_NAME		"[RTK_PWM]"
 
 struct rtk_pwm_map {
 	int duty_rate;
@@ -91,22 +72,19 @@ struct rtk_pwm_chip {
 	spinlock_t		lock;
 	int			proc_id;
 	int			base_freq;
-	int			out_freq[NUM_PWM_V3]; /* Hz */
-	int			duty_rate[NUM_PWM_V3];
-	int			enable[NUM_PWM_V3];
-	int			clksrc_div[NUM_PWM_V3];
-	int			clkout_div[NUM_PWM_V3];
-	int			clk_duty[NUM_PWM_V3];
-	int			flags[NUM_PWM_V3];
-	u32			isolation_map;
+	int			out_freq[NUM_PWM]; /* Hz */
+	int			duty_rate[NUM_PWM];
+	int			enable[NUM_PWM];
+	int			clksrc_div[NUM_PWM];
+	int			clkout_div[NUM_PWM];
+	int			clk_duty[NUM_PWM];
+	int			flags[NUM_PWM];
 	void (*pwm_reg_set)(struct rtk_pwm_chip *pc, int hwpwm);
 };
 
 #define RTK_PWM_FLAGS_PULSE_LOW_ON_CHANGE         0x1
 
 #define to_rtk_pwm_chip(d) container_of(d, struct rtk_pwm_chip, chip)
-
-static u32 num_pwm = NUM_PWM;
 
 int set_real_freq_by_target_freq(struct rtk_pwm_chip *pc, int hwpwm,
 				 int target_freq)
@@ -192,40 +170,6 @@ int set_clk_duty(struct rtk_pwm_chip *pc, int hwpwm, int duty_rate)
 	return 0;
 }
 
-static void pwm_reg_get_v1(struct rtk_pwm_chip *pc, int hwpwm)
-{
-	u32 value;
-	unsigned long flags;
-	int offset;
-
-	if (pc == NULL || hwpwm >= num_pwm) {
-		pr_err("%s: parameter error!\n", __func__);
-		return;
-	}
-
-	spin_lock_irqsave(&pc->lock, flags);
-
-	value = readl(pc->mmio_pwm_reg_base + RTK_ADDR_PWM_V1_OCD);
-	offset = hwpwm * RTK_PWM_V1_OCD_SHIFT;
-	pc->clkout_div[hwpwm] = (value & (RTK_PWM_V1_OCD_MASK << offset)) >> offset;
-
-	value = readl(pc->mmio_pwm_reg_base + RTK_ADDR_PWM_V1_CD);
-	offset = hwpwm * RTK_PWM_V1_CD_SHIFT;
-	pc->clk_duty[hwpwm] = (value & (RTK_PWM_V1_CD_MASK << offset)) >> offset;
-
-	value = readl(pc->mmio_pwm_reg_base + RTK_ADDR_PWM_V1_CSD);
-	offset = hwpwm * RTK_PWM_V1_CSD_SHIFT;
-	pc->clksrc_div[hwpwm] = (value & (RTK_PWM_V1_CSD_MASK << offset)) >> offset;
-
-	pc->enable[hwpwm] = pc->clkout_div[hwpwm] || pc->clk_duty[hwpwm] ||
-			    pc->clksrc_div[hwpwm];
-
-	pc->duty_rate[hwpwm] = (pc->clk_duty[hwpwm] + 1) * 100 / (pc->clkout_div[hwpwm] + 1);
-	set_real_freq_by_target_div(pc, hwpwm, pc->clksrc_div[hwpwm], pc->clkout_div[hwpwm]);
-
-	spin_unlock_irqrestore(&pc->lock, flags);
-}
-
 static inline void pwm_update_v1(struct rtk_pwm_chip *pc, int hwpwm)
 {
 	u32 val;
@@ -233,7 +177,7 @@ static inline void pwm_update_v1(struct rtk_pwm_chip *pc, int hwpwm)
 	if (IS_ERR_OR_NULL(pc->iso_base))
 		return;
 
-	val = BIT(hwpwm);
+	val = 1 << hwpwm;
 	regmap_update_bits_base(pc->iso_base, RTK_PWM_V1_UPD,
 				val, val, NULL, false, true);
 }
@@ -277,49 +221,6 @@ static void pwm_reg_set_v1(struct rtk_pwm_chip *pc, int hwpwm)
 		writel(value, pc->mmio_pwm_reg_base + RTK_ADDR_PWM_V1_CSD);
 
 	pwm_update_v1(pc, hwpwm);
-	spin_unlock_irqrestore(&pc->lock, flags);
-}
-
-static void pwm_reg_get_v2(struct rtk_pwm_chip *pc, int hwpwm)
-{
-	void __iomem *reg;
-	u32 value;
-	unsigned long flags;
-
-	if (pc == NULL || hwpwm >= num_pwm) {
-		pr_err("%s: parameter error!\n", __func__);
-		return;
-	}
-
-	switch (hwpwm) {
-	case 0:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM0_V2;
-		break;
-	case 1:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM1_V2;
-		break;
-	case 2:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM2_V2;
-		break;
-	case 3:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM3_V2;
-		break;
-	default:
-		dev_err(pc->dev, "invalid index: PWM %d\n", hwpwm);
-		return;
-	}
-
-	spin_lock_irqsave(&pc->lock, flags);
-
-	value = readl(reg);
-	pc->clkout_div[hwpwm] = (value >> RTK_PWM_V2_OCD_SHIFT) & RTK_PWM_V2_OCD_MASK;
-	pc->clk_duty[hwpwm] = (value >> RTK_PWM_V2_CD_SHIFT) & RTK_PWM_V2_CD_MASK;
-	pc->clksrc_div[hwpwm] = (value >> RTK_PWM_V2_CSD_SHIFT) & RTK_PWM_V2_CSD_MASK;
-	pc->enable[hwpwm] = !!value;
-
-	pc->duty_rate[hwpwm] = (pc->clk_duty[hwpwm] + 1) * 100 / (pc->clkout_div[hwpwm] + 1);
-	set_real_freq_by_target_div(pc, hwpwm, pc->clksrc_div[hwpwm], pc->clkout_div[hwpwm]);
-
 	spin_unlock_irqrestore(&pc->lock, flags);
 }
 
@@ -369,135 +270,10 @@ static void pwm_reg_set_v2(struct rtk_pwm_chip *pc, int hwpwm)
 	spin_unlock_irqrestore(&pc->lock, flags);
 }
 
-static void pwm_reg_get_v3(struct rtk_pwm_chip *pc, int hwpwm)
-{
-	void __iomem *reg;
-	u32 value;
-	unsigned long flags;
-
-	if (pc == NULL || hwpwm >= num_pwm) {
-		pr_err("%s: parameter error!\n", __func__);
-		return;
-	}
-
-	switch (hwpwm) {
-	case 0:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM0_V3;
-		break;
-	case 1:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM1_V3;
-		break;
-	case 2:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM2_V3;
-		break;
-	case 3:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM3_V3;
-		break;
-	case 4:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM4_V3;
-		break;
-	case 5:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM5_V3;
-		break;
-	case 6:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM6_V3;
-		break;
-	default:
-		dev_err(pc->dev, "invalid index: PWM %d\n", hwpwm);
-		return;
-	}
-
-	spin_lock_irqsave(&pc->lock, flags);
-
-	value = readl(reg);
-	pc->clkout_div[hwpwm] = (value >> RTK_PWM_V3_OCD_SHIFT) & RTK_PWM_V3_OCD_MASK;
-	pc->clk_duty[hwpwm] = (value >> RTK_PWM_V3_CD_SHIFT) & RTK_PWM_V3_CD_MASK;
-	pc->clksrc_div[hwpwm] = (value >> RTK_PWM_V3_CSD_SHIFT) & RTK_PWM_V3_CSD_MASK;
-	pc->enable[hwpwm] = !!(value >> RTK_PWM_V3_EN_SHIFT);
-
-	pc->duty_rate[hwpwm] = (pc->clk_duty[hwpwm] + 1) * 100 / (pc->clkout_div[hwpwm] + 1);
-	set_real_freq_by_target_div(pc, hwpwm, pc->clksrc_div[hwpwm], pc->clkout_div[hwpwm]);
-
-	spin_unlock_irqrestore(&pc->lock, flags);
-}
-
-static void pwm_reg_set_v3(struct rtk_pwm_chip *pc, int hwpwm)
-{
-	void __iomem *reg;
-	u32 value;
-	u32 old_val;
-	int clkout_div = 0;
-	int clk_duty = 0;
-	int clksrc_div = 0;
-	unsigned long flags;
-
-	clkout_div = pc->clkout_div[hwpwm];
-	clk_duty = pc->clk_duty[hwpwm];
-	clksrc_div = pc->clksrc_div[hwpwm];
-
-	switch (hwpwm) {
-	case 0:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM0_V3;
-		break;
-	case 1:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM1_V3;
-		break;
-	case 2:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM2_V3;
-		break;
-	case 3:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM3_V3;
-		break;
-	case 4:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM4_V3;
-		break;
-	case 5:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM5_V3;
-		break;
-	case 6:
-		reg = pc->mmio_pwm_reg_base + RTK_ADDR_PWM6_V3;
-		break;
-	default:
-		dev_err(pc->dev, "invalid index: PWM %d\n", hwpwm);
-		return;
-	}
-
-	spin_lock_irqsave(&pc->lock, flags);
-
-	old_val = readl(reg);
-	value = ((clksrc_div & RTK_PWM_V3_CSD_MASK) << RTK_PWM_V3_CSD_SHIFT) |
-		((clkout_div & RTK_PWM_V3_OCD_MASK) << RTK_PWM_V3_OCD_SHIFT) |
-		((clk_duty & RTK_PWM_V3_CD_MASK) << RTK_PWM_V3_CD_SHIFT) |
-		(!!pc->enable[hwpwm] << RTK_PWM_V3_EN_SHIFT);
-	if (value != old_val)
-		writel(value, reg);
-
-	spin_unlock_irqrestore(&pc->lock, flags);
-}
-
-static void pwm_get_register(struct rtk_pwm_chip *pc, int hwpwm)
-{
-	if (pc == NULL) {
-		pr_err("%s: parameter error!\n", __func__);
-		return;
-	}
-
-	if (pc->pwm_reg_set == pwm_reg_set_v1)
-		pwm_reg_get_v1(pc, hwpwm);
-	else if (pc->pwm_reg_set == pwm_reg_set_v2)
-		pwm_reg_get_v2(pc, hwpwm);
-	else if (pc->pwm_reg_set == pwm_reg_set_v3)
-		pwm_reg_get_v3(pc, hwpwm);
-}
-
 static void pwm_set_register(struct rtk_pwm_chip *pc, int hwpwm)
 {
 	if (pc == NULL) {
-		pr_err("%s: parameter error!\n", __func__);
-		return;
-	} else if (pc->isolation_map & BIT(hwpwm)) {
-		pr_debug("%s: PWM %d can't be set because it is isloated\n",
-			 __func__, hwpwm);
+		pr_err("%s %s -- parameter error!--\n", DEV_NAME, __func__);
 		return;
 	}
 
@@ -505,7 +281,7 @@ static void pwm_set_register(struct rtk_pwm_chip *pc, int hwpwm)
 }
 
 static int rtk_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
-			  int duty_ns, int period_ns, bool enabled)
+			  int duty_ns, int period_ns)
 {
 	struct rtk_pwm_chip *pc = to_rtk_pwm_chip(chip);
 	int real_period_ns, duty_rate;
@@ -547,7 +323,7 @@ static void rtk_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 
 }
 
-static int rtk_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
+static void rtk_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 			      struct pwm_state *state)
 {
 	struct rtk_pwm_chip *pc = to_rtk_pwm_chip(chip);
@@ -559,7 +335,7 @@ static int rtk_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 		state->period     = 0;
 		state->duty_cycle = 0;
 		state->enabled    = 0;
-		return 0;
+		return;
 	}
 
 	div = BIT(pc->clksrc_div[id] + 1) * (pc->clkout_div[id] + 1);
@@ -567,44 +343,13 @@ static int rtk_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 
 	state->period = DIV_ROUND_UP(RTK_1SEC_TO_NS, real_freq);
 	state->duty_cycle = DIV_ROUND_UP_SECTOR_T(state->period * pc->duty_rate[id], 100);
-	state->enabled = pc->enable[id];
-
-	return 0;
-}
-
-static int rtk_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
-			 const struct pwm_state *state)
-{
-	bool enabled = pwm->state.enabled;
-	int err;
-
-	if (state->polarity != pwm->state.polarity) {
-		if (enabled) {
-			rtk_pwm_disable(chip, pwm);
-			enabled = false;
-		}
-	}
-
-	if (!state->enabled) {
-		if (enabled)
-			rtk_pwm_disable(chip, pwm);
-
-		return 0;
-	}
-
-	err = rtk_pwm_config(pwm->chip, pwm, state->duty_cycle, state->period,
-			     enabled);
-	if (err)
-		return err;
-
-	if (!enabled)
-		err = rtk_pwm_enable(chip, pwm);
-
-	return err;
+	state->enabled = !!pc->enable[id];
 }
 
 static const struct pwm_ops rtk_pwm_ops = {
-	.apply = rtk_pwm_apply,
+	.config = rtk_pwm_config,
+	.enable = rtk_pwm_enable,
+	.disable = rtk_pwm_disable,
 	.get_state = rtk_pwm_get_state,
 	.owner = THIS_MODULE,
 };
@@ -630,26 +375,28 @@ static ssize_t duty_rate_store(struct device *dev,
 	struct rtk_pwm_chip *pc = platform_get_drvdata(pdev);
 
 	if (count < 1) {
-		pr_err("%s: count is too small, return\n", __func__);
+		pr_err("%s %s , count is too small, return\n",
+		       DEV_NAME, __func__);
 		return count;
 	}
 	ret = kstrtoint(buf, 10, &value);
 	if (ret != 0) {
-		pr_err("%s: parse buf [%s] error! ret=%d\n",
-		       __func__, buf, ret);
+		pr_err("%s %s , parse buf error! ret=%d\n",
+		       DEV_NAME, __func__, ret);
 		return count;
 	}
 	if (value < 0 || value > 100) {
-		pr_err("%s: input (%d) should between 0 ~ 100\n",
-		       __func__, value);
+		pr_err("%s %s  ====  input should between 0 ~ 100\n",
+		       DEV_NAME, __func__);
 		return count;
 	}
 	if (pc->duty_rate[hwpwm] == value) {
-		pr_info("%s: duty_rate value is not change, return!\n",
-			__func__);
+		pr_info(" %s %s -- duty_rate value is not change, return!\n",
+			DEV_NAME, __func__);
 		return count;
 	}
-	pr_info("%s: assign [%d] to duty_rate now!\n", __func__, value);
+	pr_info("%s %s -- assign [%d] to duty_rate now!\n",
+		DEV_NAME, __func__, value);
 
 	set_clk_duty(pc, hwpwm, value);
 	pwm_set_register(pc, hwpwm);
@@ -676,14 +423,15 @@ static ssize_t pwm_enable_store(struct device *dev,
 	int value = 0;
 
 	if (buf == NULL) {
-		pr_err("%s: buffer is null, return\n", __func__);
+		pr_err("%s %s\t====  buffer is null, return\n",
+		       DEV_NAME, __func__);
 		return count;
 	}
 	sscanf(buf, "%d", &value);
 
 	if (pc->enable[hwpwm] == value) {
-		pr_info("%s: the same, do nothing (hwpwm=%d, value=%d)\n",
-			__func__, hwpwm, value);
+		pr_info("%s %s\t====  the same, do nothing (hwpwm=%d, value=%d)\n",
+			DEV_NAME, __func__, hwpwm, value);
 		return count;
 	}
 
@@ -709,29 +457,27 @@ static ssize_t clk_src_div_store(struct device *dev,
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct rtk_pwm_chip *pc = platform_get_drvdata(pdev);
-
+	int max_csd;
 	int value = 0;
-	int max_val;
 
 	if (buf == NULL) {
-		pr_err("%s: buffer is null, return\n", __func__);
+		pr_err("%s %s  ====  buffer is null, return\n",
+		       DEV_NAME, __func__);
 		return count;
 	}
 	sscanf(buf, "%d", &value);
 
-	if (pc->pwm_reg_set == pwm_reg_set_v1)
-		max_val = RTK_PWM_V1_CSD_MASK;
-	else
-		max_val = RTK_PWM_V2_CSD_MASK;
-
-	if (value < 0 || value > max_val) {
-		pr_err("%s: input should between 0 ~ %d\n", __func__, max_val);
+	max_csd = (pc->pwm_reg_set == pwm_reg_set_v1) ?
+		  RTK_PWM_V1_CSD_MASK : RTK_PWM_V2_CSD_MASK;
+	if (value < 0 || value > max_csd) {
+		pr_err("%s %s  ====  input should between 0 ~ %d\n",
+		       DEV_NAME, __func__, max_csd);
 		return count;
 	}
 
 	if (pc->clksrc_div[hwpwm] == value) {
-		pr_info("%s: hwpwm=%d, input is the same=%d, do nothing!\n",
-			__func__, hwpwm, value);
+		pr_info("%s %s  ====  hwpwm=%d, input is the same=%d, do nothing!\n",
+			DEV_NAME, __func__, hwpwm, value);
 		return count;
 	}
 
@@ -762,20 +508,21 @@ static ssize_t clk_out_div_store(struct device *dev,
 	int value = 0;
 
 	if (buf == NULL) {
-		pr_err("%s: buffer is null, return\n", __func__);
+		pr_err("%s %s  ====  buffer is null, return\n",
+		       DEV_NAME, __func__);
 		return count;
 	}
 	sscanf(buf, "%d", &value);
 
 	if (value < 0 || value > 255) {
-		pr_err("%s: input (%d) should between 0 ~ 255\n",
-		       __func__, value);
+		pr_err("%s %s  ====  input should between 0 ~ 255\n",
+		       DEV_NAME, __func__);
 		return count;
 	}
 
 	if (pc->clkout_div[hwpwm] == value) {
-		pr_info("%s: hwpwm=%d, input is the same=%d, do nothing!\n",
-			__func__, hwpwm, value);
+		pr_info("%s %s  ====  hwpwm=%d, input is the same=%d, do nothing!\n",
+			DEV_NAME, __func__, hwpwm, value);
 		return count;
 	}
 
@@ -806,20 +553,21 @@ static ssize_t out_freq_store(struct device *dev,
 	int value = 0;
 
 	if (buf == NULL) {
-		pr_err("%s: buffer is null, return\n", __func__);
+		pr_err("%s %s  ====  buffer is null, return\n",
+		       DEV_NAME, __func__);
 		return count;
 	}
 	sscanf(buf, "%d", &value);
 
 	if (value < 0 || value > RTK_27MHZ) {
-		pr_err("%s: input (%d) should between 0 ~ 27MHz\n",
-		       __func__, value);
+		pr_err("%s %s  ====  input should between 0 ~ 27MHz\n",
+		       DEV_NAME, __func__);
 		return count;
 	}
 
 	if (pc->out_freq[hwpwm] == value) {
-		pr_info("%s: hwpwm=%d, input is the same=%d, do nothing!\n",
-			__func__, hwpwm, value);
+		pr_info("%s %s  ====  hwpwm=%d, input is the same=%d, do nothing!\n",
+			DEV_NAME, __func__, hwpwm, value);
 		return count;
 	}
 
@@ -877,24 +625,6 @@ RTK_PWM_HANDLE(clk_src_div, 3, 0664);
 RTK_PWM_HANDLE(clk_out_div, 3, 0664);
 RTK_PWM_HANDLE(out_freq, 3, 0444);
 
-RTK_PWM_HANDLE(duty_rate, 4, 0664);
-RTK_PWM_HANDLE(pwm_enable, 4, 0664);
-RTK_PWM_HANDLE(clk_src_div, 4, 0664);
-RTK_PWM_HANDLE(clk_out_div, 4, 0664);
-RTK_PWM_HANDLE(out_freq, 4, 0444);
-
-RTK_PWM_HANDLE(duty_rate, 5, 0664);
-RTK_PWM_HANDLE(pwm_enable, 5, 0664);
-RTK_PWM_HANDLE(clk_src_div, 5, 0664);
-RTK_PWM_HANDLE(clk_out_div, 5, 0664);
-RTK_PWM_HANDLE(out_freq, 5, 0444);
-
-RTK_PWM_HANDLE(duty_rate, 6, 0664);
-RTK_PWM_HANDLE(pwm_enable, 6, 0664);
-RTK_PWM_HANDLE(clk_src_div, 6, 0664);
-RTK_PWM_HANDLE(clk_out_div, 6, 0664);
-RTK_PWM_HANDLE(out_freq, 6, 0444);
-
 static struct attribute *pwm_dev_attrs[] = {
 	&dev_attr_duty_rate0.attr,
 	&dev_attr_pwm_enable0.attr,
@@ -920,24 +650,6 @@ static struct attribute *pwm_dev_attrs[] = {
 	&dev_attr_clk_out_div3.attr,
 	&dev_attr_out_freq3.attr,
 
-	&dev_attr_duty_rate4.attr,
-	&dev_attr_pwm_enable4.attr,
-	&dev_attr_clk_src_div4.attr,
-	&dev_attr_clk_out_div4.attr,
-	&dev_attr_out_freq4.attr,
-
-	&dev_attr_duty_rate5.attr,
-	&dev_attr_pwm_enable5.attr,
-	&dev_attr_clk_src_div5.attr,
-	&dev_attr_clk_out_div5.attr,
-	&dev_attr_out_freq5.attr,
-
-	&dev_attr_duty_rate6.attr,
-	&dev_attr_pwm_enable6.attr,
-	&dev_attr_clk_src_div6.attr,
-	&dev_attr_clk_out_div6.attr,
-	&dev_attr_out_freq6.attr,
-
 	NULL,
 };
 
@@ -949,8 +661,7 @@ static int rtk_pwm_probe(struct platform_device *pdev)
 {
 	struct rtk_pwm_chip *pwm;
 	struct device_node *node = pdev->dev.of_node;
-	struct device_node *pwm_[NUM_PWM_V3];
-	char pwm_name[STR_LEN];
+	struct device_node *pwm_[NUM_PWM];
 	int ret = 0;
 	u32 val = 0;
 	int i;
@@ -979,24 +690,7 @@ static int rtk_pwm_probe(struct platform_device *pdev)
 	pwm->iso_base = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
 							"realtek,iso");
 
-	if (of_property_read_u32(pdev->dev.of_node, "num-pwm", &num_pwm)) {
-		if (pwm->pwm_reg_set == pwm_reg_set_v1 ||
-		    pwm->pwm_reg_set == pwm_reg_set_v2)
-			num_pwm = NUM_PWM;
-		else
-			num_pwm = NUM_PWM_V3;
-	} else if ((pwm->pwm_reg_set == pwm_reg_set_v1 ||
-		  pwm->pwm_reg_set == pwm_reg_set_v2) && num_pwm > NUM_PWM) {
-		dev_err(&pdev->dev, "num-pwm %d is out of range. Forced to %d\n",
-			num_pwm, NUM_PWM);
-		num_pwm = NUM_PWM;
-	} else if (num_pwm > NUM_PWM_V3) {
-		dev_err(&pdev->dev, "num-pwm %d is out of range. Forced to %d\n",
-			num_pwm, NUM_PWM_V3);
-		num_pwm = NUM_PWM_V3;
-	}
-
-	for (i = 0; i < num_pwm; i++) {
+	for (i = 0; i < NUM_PWM; i++) {
 		pwm->out_freq[i] = 0;
 		pwm->enable[i] = 0;
 		pwm->clkout_div[i] = RTK_PWM_OCD_DEFAULT;
@@ -1005,50 +699,135 @@ static int rtk_pwm_probe(struct platform_device *pdev)
 		pwm->duty_rate[i] = 0;
 	}
 
-	for (i = 0; i < num_pwm; i++) {
-		if (pwm->pwm_reg_set == pwm_reg_set_v1 ||
-		    pwm->pwm_reg_set == pwm_reg_set_v2)
-			snprintf(pwm_name, STR_LEN, "pwm_%d", i);
-		else
-			snprintf(pwm_name, STR_LEN, "pwm-%d", i);
-		pwm_[i] = of_get_child_by_name(node, pwm_name);
-		if (!pwm_[i]) {
-			dev_err(&pdev->dev,
-				"could not find [%s] sub-node\n", pwm_name);
-			return -EINVAL;
-		}
-
-		if (!of_property_read_u32(pwm_[i], "clkout_div", &val))
-			pwm->clkout_div[i] = val;
-
-		if (!of_property_read_u32(pwm_[i], "clksrc_div", &val))
-			pwm->clksrc_div[i] = val;
-
-		set_real_freq_by_target_div(pwm, i, pwm->clksrc_div[i],
-					    pwm->clkout_div[i]);
-
-		if (!of_property_read_u32(pwm_[i], "enable", &val))
-			pwm->enable[i] = val;
-
-		if (!of_property_read_u32(pwm_[i], "duty_rate", &val))
-			set_clk_duty(pwm, i, val);
-
-		if (of_find_property(pwm_[i], "pulse-low-on-change", NULL))
-			pwm->flags[i] |= RTK_PWM_FLAGS_PULSE_LOW_ON_CHANGE;
-
-		pr_info("%s: hwpwm=(%d) enable=(%d) duty_rate=(%d) clksrc_div=(%d) clkout_div=(%d)\n",
-			__func__, i, pwm->enable[i], pwm->duty_rate[i],
-			pwm->clksrc_div[i], pwm->clkout_div[i]);
-		pr_info("%s: defualt output frequency = %dHz\n",
-			__func__, pwm->out_freq[i]);
+	pwm_[0] = of_get_child_by_name(node, "pwm_0");
+	if (!pwm_[0]) {
+		dev_err(&pdev->dev, "could not find [pwm_0] sub-node\n");
+		return -EINVAL;
 	}
+
+	pwm_[1] = of_get_child_by_name(node, "pwm_1");
+	if (!pwm_[1]) {
+		dev_err(&pdev->dev, "could not find [pwm_1] sub-node\n");
+		return -EINVAL;
+	}
+
+	pwm_[2] = of_get_child_by_name(node, "pwm_2");
+	if (!pwm_[2]) {
+		dev_err(&pdev->dev, "could not find [pwm_2] sub-node\n");
+		return -EINVAL;
+	}
+
+	pwm_[3] = of_get_child_by_name(node, "pwm_3");
+	if (!pwm_[3]) {
+		dev_err(&pdev->dev, "could not find [pwm_3] sub-node\n");
+		return -EINVAL;
+	}
+
+	/* PWM0 */
+	if (!of_property_read_u32(pwm_[0], "clkout_div", &val))
+		pwm->clkout_div[0] = val;
+
+	if (!of_property_read_u32(pwm_[0], "clksrc_div", &val))
+		pwm->clksrc_div[0] = val;
+
+	set_real_freq_by_target_div(pwm, 0, pwm->clksrc_div[0],
+				    pwm->clkout_div[0]);
+
+	if (!of_property_read_u32(pwm_[0], "enable", &val))
+		pwm->enable[0] = val;
+
+	if (!of_property_read_u32(pwm_[0], "duty_rate", &val))
+		set_clk_duty(pwm, 0, val);
+
+	if (of_find_property(pwm_[0], "pulse-low-on-change", NULL))
+		pwm->flags[0] |= RTK_PWM_FLAGS_PULSE_LOW_ON_CHANGE;
+
+	pr_info("%s %s - hwpwm=(%d) enable=(%d) duty_rate=(%d) clksrc_div=(%d) clkout_div=(%d)---\n",
+		DEV_NAME, __func__, 0, pwm->enable[0], pwm->duty_rate[0],
+		pwm->clksrc_div[0], pwm->clkout_div[0]);
+	pr_info("%s %s - defualt output frequence = %dHz ---\n",
+		DEV_NAME, __func__, pwm->out_freq[0]);
+
+	/* PWM1 */
+	if (!of_property_read_u32(pwm_[1], "clkout_div", &val))
+		pwm->clkout_div[1] = val;
+
+	if (!of_property_read_u32(pwm_[1], "clksrc_div", &val))
+		pwm->clksrc_div[1] = val;
+
+	set_real_freq_by_target_div(pwm, 1, pwm->clksrc_div[1],
+				    pwm->clkout_div[1]);
+
+	if (!of_property_read_u32(pwm_[1], "enable", &val))
+		pwm->enable[1] = val;
+
+	if (!of_property_read_u32(pwm_[1], "duty_rate", &val))
+		set_clk_duty(pwm, 1, val);
+
+	if (of_find_property(pwm_[1], "pulse-low-on-change", NULL))
+		pwm->flags[1] |= RTK_PWM_FLAGS_PULSE_LOW_ON_CHANGE;
+
+	pr_info("%s %s - hwpwm=(%d) enable=(%d) duty_rate=(%d) clksrc_div=(%d) clkout_div=(%d)---\n",
+		DEV_NAME, __func__, 1, pwm->enable[1], pwm->duty_rate[1],
+		pwm->clksrc_div[1], pwm->clkout_div[1]);
+	pr_info("%s %s - defualt output frequence = %dHz ---\n",
+		DEV_NAME, __func__, pwm->out_freq[1]);
+
+	/* PWM2 */
+	if (!of_property_read_u32(pwm_[2], "clkout_div", &val))
+		pwm->clkout_div[2] = val;
+
+	if (!of_property_read_u32(pwm_[2], "clksrc_div", &val))
+		pwm->clksrc_div[2] = val;
+
+	set_real_freq_by_target_div(pwm, 2, pwm->clksrc_div[2],
+				    pwm->clkout_div[2]);
+
+	if (!of_property_read_u32(pwm_[2], "enable", &val))
+		pwm->enable[2] = val;
+
+	if (!of_property_read_u32(pwm_[2], "duty_rate", &val))
+		set_clk_duty(pwm, 2, val);
+
+	if (of_find_property(pwm_[2], "pulse-low-on-change", NULL))
+		pwm->flags[2] |= RTK_PWM_FLAGS_PULSE_LOW_ON_CHANGE;
+
+	pr_info("%s %s - hwpwm=(%d) enable=(%d) duty_rate=(%d) clksrc_div=(%d) clkout_div=(%d)---\n",
+		DEV_NAME, __func__, 2, pwm->enable[2], pwm->duty_rate[2],
+		pwm->clksrc_div[2], pwm->clkout_div[2]);
+	pr_info("%s %s - defualt output frequence = %dHz ---\n",
+		DEV_NAME, __func__, pwm->out_freq[2]);
+
+	/* PWM3 */
+	if (!of_property_read_u32(pwm_[3], "clkout_div", &val))
+		pwm->clkout_div[3] = val;
+
+	if (!of_property_read_u32(pwm_[3], "clksrc_div", &val))
+		pwm->clksrc_div[3] = val;
+
+	set_real_freq_by_target_div(pwm, 3, pwm->clksrc_div[3],
+				    pwm->clkout_div[3]);
+
+	if (!of_property_read_u32(pwm_[3], "enable", &val))
+		pwm->enable[3] = val;
+
+	if (!of_property_read_u32(pwm_[3], "duty_rate", &val))
+		set_clk_duty(pwm, 3, val);
+
+	if (of_find_property(pwm_[3], "pulse-low-on-change", NULL))
+		pwm->flags[3] |= RTK_PWM_FLAGS_PULSE_LOW_ON_CHANGE;
+
+	pr_info("%s %s - hwpwm=(%d) enable=(%d) duty_rate=(%d) clksrc_div=(%d) clkout_div=(%d)---\n",
+		DEV_NAME, __func__, 3, pwm->enable[3], pwm->duty_rate[3],
+		pwm->clksrc_div[3], pwm->clkout_div[3]);
+	pr_info("%s %s - defualt output frequence = %dHz ---\n",
+		DEV_NAME, __func__, pwm->out_freq[3]);
 
 	pwm->chip.dev = &pdev->dev;
 	pwm->chip.ops = &rtk_pwm_ops;
 	pwm->chip.base = 0;
-	pwm->chip.npwm = num_pwm;
+	pwm->chip.npwm = NUM_PWM;
 
-	pwm_dev_attrs[num_pwm * 5] = NULL;
 	ret = sysfs_create_group(&pdev->dev.kobj, &pwm_dev_attr_group);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "sysfs_create_group() failed: %d\n", ret);
@@ -1062,15 +841,8 @@ static int rtk_pwm_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	for (i = 0; i < num_pwm; i++) {
-		/* check if we get current PWM settings from registers */
-		if (pwm->enable[i] == 2) /* inherit */
-			pwm_get_register(pwm, i);
-		else if (pwm->enable[i] == 3) /* isolate */
-			pwm->isolation_map |= BIT(i);
-
+	for (i = 0; i < NUM_PWM; i++)
 		pwm_set_register(pwm, i);
-	}
 
 	return 0;
 }
@@ -1080,57 +852,15 @@ static int rtk_pwm_remove(struct platform_device *pdev)
 	struct rtk_pwm_chip *pc = platform_get_drvdata(pdev);
 	int i;
 
-	for (i = 0; i < num_pwm; i++) {
+	for (i = 0; i < NUM_PWM; i++) {
 		pc->enable[i] = 0;
 		pwm_set_register(pc, i);
 	}
 	sysfs_remove_group(&pdev->dev.kobj, &pwm_dev_attr_group);
-
 	pwmchip_remove(&pc->chip);
 
 	return 0;
 }
-
-#ifdef CONFIG_PM_SLEEP
-
-static int rtk_pwm_suspend(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct rtk_pwm_chip *pc = platform_get_drvdata(pdev);
-	int i;
-
-	dev_info(dev, "[PWM] backup %d PWM settings\n", num_pwm);
-	for (i = 0; i < num_pwm; i++)
-		if (pc->isolation_map & BIT(i))
-			dev_dbg(dev, "ignore isolated PWM%d\n", i);
-
-	return 0;
-}
-
-static int rtk_pwm_resume(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct rtk_pwm_chip *pc = platform_get_drvdata(pdev);
-	int i;
-
-	dev_info(dev, "[PWM] restore %d PWM settings\n", num_pwm);
-	for (i = 0; i < num_pwm; i++) {
-		if (pc->isolation_map & BIT(i))
-			dev_dbg(dev, "ignore isolated PWM%d\n", i);
-		else
-			pwm_set_register(pc, i);
-	}
-
-	return 0;
-}
-
-static SIMPLE_DEV_PM_OPS(rtk_pwm_pm_ops, rtk_pwm_suspend, rtk_pwm_resume);
-
-#define RTK_PWM_PM_OPS	(&rtk_pwm_pm_ops)
-
-#else /* CONFIG_PM_SLEEP */
-#define RTK_PWM_PM_OPS	NULL
-#endif /* CONFIG_PM_SLEEP */
 
 static const struct of_device_id rtk_pwm_of_match[] = {
 	{
@@ -1141,10 +871,6 @@ static const struct of_device_id rtk_pwm_of_match[] = {
 		.compatible = "realtek,rtk-pwm-v2",
 		.data = pwm_reg_set_v2,
 	},
-	{
-		.compatible = "realtek,rtk-pwm-v3",
-		.data = pwm_reg_set_v3,
-	},
 	{ /* sentinel */ }
 };
 
@@ -1154,7 +880,6 @@ static struct platform_driver rtk_pwm_platform_driver = {
 	.driver = {
 		.name		= "rtk-pwm",
 		.owner		= THIS_MODULE,
-		.pm		= RTK_PWM_PM_OPS,
 		.of_match_table = of_match_ptr(rtk_pwm_of_match),
 	},
 	.probe = rtk_pwm_probe,
