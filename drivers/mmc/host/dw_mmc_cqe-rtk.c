@@ -20,7 +20,6 @@
 #include <linux/regmap.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/nvmem-consumer.h>
-#include <linux/sys_soc.h>
 
 #include "dw_mmc_cqe.h"
 #include "dw_mmc-pltfm.h"
@@ -34,20 +33,12 @@ static void dqs_delay_tap_setting(struct dw_mci *host, u32 dqs_dly);
 static void cmd_delay_tap_setting(struct dw_mci *host, u32 cmd_dly_tape);
 static void data_delay_tap_setting(struct dw_mci *host);
 static void dw_mci_rtk_hs400_complete(struct mmc_host *mmc);
-static void dw_mci_rtk_enhanced_strobe(struct dw_mci_slot *slot);
 static int dw_mci_rtk_execute_tuning(struct dw_mci_slot *slot, u32 opcode);
 int mmc_cmdq_enable(struct mmc_card *card);
 int mmc_cmdq_disable(struct mmc_card *card);
 int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 	       unsigned int timeout_ms);
 
-static const struct soc_device_attribute rtk_soc[] = {
-        { .family = "Realtek Stark", },
-        { .family = "Realtek Groot",},
-        { .family = "Realtek Parker", },
-        { .family = "Realtek RTD1325", },
-        { .family = "Realtek Danvers", },
-        { /* empty */ } };
 
 
 int dw_mci_rtk_write_protect_cmd(struct mmc_host *mmc, u32 args, bool is_wrtie_protect)
@@ -137,8 +128,6 @@ out:
 
 static int dw_mci_rtk13xx_switch_to_uda(struct mmc_host *mmc)
 {
-	struct dw_mci_slot *slot = mmc_priv(mmc);
-        struct dw_mci *host = slot->host;
 	u8 part_config = mmc->card->ext_csd.part_config;
 	int ret = 0;
 
@@ -149,7 +138,7 @@ static int dw_mci_rtk13xx_switch_to_uda(struct mmc_host *mmc)
 			if (ret)
 				return ret;
 		}
-		dev_info(host->dev, "switch to uda partition...\n");
+		pr_info("%s: switch to uda partition...\n", __func__);
 		part_config &= ~EXT_CSD_PART_CONFIG_ACC_MASK;
 		part_config |= 0x0;     //uda partition
 
@@ -165,8 +154,6 @@ static int dw_mci_rtk13xx_switch_to_uda(struct mmc_host *mmc)
 
 static int dw_mci_rtk13xx_restore_from_uda(struct mmc_host *mmc)
 {
-	struct dw_mci_slot *slot = mmc_priv(mmc);
-        struct dw_mci *host = slot->host;
 	int ret = 0;
 
 	if ((mmc->card->ext_csd.part_config&0x7) != 0) {
@@ -175,7 +162,7 @@ static int dw_mci_rtk13xx_restore_from_uda(struct mmc_host *mmc)
 			if (ret)
 				return ret;
 		}
-		dev_info(host->dev, "switch back to original partition...\n");
+		pr_info("%s: switch back to original partition...\n", __func__);
 
 		ret = mmc_switch(mmc->card, EXT_CSD_CMD_SET_NORMAL,
 				 EXT_CSD_PART_CONFIG, mmc->card->ext_csd.part_config,
@@ -200,11 +187,11 @@ static ssize_t protect_region_setting_dev_show(struct device *dev,
 	wpg_unit = mmc->card->ext_csd.raw_hc_erase_grp_size *
 			mmc->card->ext_csd.raw_hc_erase_gap_size * 1024;
 
-	dev_info(host->dev, "echo Q > protect_region_setting to show all eMMC protect group regions\n");
-	dev_info(host->dev, "echo C > protect_region_setting to clear all eMMC protect group region\n");
-	dev_info(host->dev, "echo S > protect_region_setting to set eMMC protect the N-th group region\n");
-	dev_info(host->dev, "write protect unit = 0x%x blocks\n", wpg_unit);
-	dev_info(host->dev, "start from Nth protect group, the following 32 protect group bitmap =\n");
+	pr_err("echo Q > protect_region_setting to show all eMMC protect group regions\n");
+	pr_err("echo C > protect_region_setting to clear all eMMC protect group region\n");
+	pr_err("echo S > protect_region_setting to set eMMC protect the N-th group region\n");
+	pr_err("write protect unit = 0x%x blocks\n", wpg_unit);
+	pr_err("start from Nth protect group, the following 32 protect group bitmap =\n");
 	mmc_claim_host(mmc);
 	ret = dw_mci_rtk13xx_switch_to_uda(mmc);
 
@@ -241,7 +228,7 @@ static ssize_t protect_region_setting_dev_store(struct device *dev,
 		dev_dbg(dev, "%s curret eMMC protect region status:\n", __func__);
 		for (args = 0; args < max_sectors; args += (wpg_unit * 0x20)) {
 			dw_mci_rtk_query_protect_cmd(mmc, args, &src);
-			dev_info(host->dev, "from sector 0x%lx = 0x%x\n", args, src);
+			pr_err("from sector 0x%lx = 0x%x\n", args, src);
 		}
 	} else if (buf[0] =='C' || buf[0] == 'c') {
 		dev_dbg(dev, "%s clear all eMMC protect group regions...\n", __func__);
@@ -302,7 +289,7 @@ static ssize_t protect_region_start_dev_store(struct device *dev,
 	ret = kstrtoul(buf, 0, &val);
 	priv->protect_start = val;
 
-	dev_info(host->dev, "protect_start = 0x%x\n", priv->protect_start);
+	pr_err("protect_start = 0x%x\n", priv->protect_start);
 
 	return count;
 }
@@ -330,7 +317,7 @@ static ssize_t protect_region_cnt_dev_store(struct device *dev,
         ret = kstrtoul(buf, 0, &val);
         priv->protect_cnt = val;
 
-        dev_info(host->dev, "protect_cnt = 0x%x\n", priv->protect_cnt);
+        pr_err("protect_cnt = 0x%x\n", priv->protect_cnt);
 
         return count;
 }
@@ -348,7 +335,7 @@ static ssize_t protect_region_unit_dev_show(struct device *dev,
 	priv->protect_unit = mmc->card->ext_csd.raw_hc_erase_grp_size *
 				mmc->card->ext_csd.raw_hc_erase_gap_size * 1024;
 
-	dev_info(host->dev, "the protect group unit(blocks)=\n");
+	pr_err("the protect group unit(blocks)=\n");
 
 	return sprintf(buf, "0x%x\n", priv->protect_unit);
 }
@@ -384,10 +371,7 @@ tuning_info_dev_show(struct device *dev, struct device_attribute *attr, char *bu
 	if (ret != 0)
 		goto out;
 
-	if(mmc->ios.enhanced_strobe) {
-		dw_mci_rtk_enhanced_strobe(slot);
-		size = sprintf(buf, "eMMC hs400es tuning finished !!!\n");
-	} else if (mmc->ios.timing == MMC_TIMING_MMC_HS400) {
+	if (mmc->ios.timing == MMC_TIMING_MMC_HS400) {
 		dw_mci_rtk_hs400_complete(mmc);
 		size = sprintf(buf, "eMMC hs400 tuning finished !!!\n");
 	} else if (mmc->ios.timing == MMC_TIMING_MMC_HS200) {
@@ -464,7 +448,7 @@ static void setup_clk_div(struct dw_mci_slot *slot)
 
 		if (clock != slot->__clk_old) {
 			/* Silent the verbose log if calling from PM context */
-			dev_info(host->dev, "Bus speed (slot %d) = %dHz (slot req %dHz, actual %dHZ div = %d)\n",
+			printk(KERN_INFO "Bus speed (slot %d) = %dHz (slot req %dHz, actual %dHZ div = %d)\n",
 				slot->id, host->bus_hz, clock,
 				host->bus_hz / div, div);
 		}
@@ -493,7 +477,7 @@ static void setup_clk_div(struct dw_mci_slot *slot)
 				mci_readl(host, CKGEN_CTL) | SDMMC_CRC_CLK_DIV_EN);
 			break;
 		default:
-			dev_info(host->dev, "%s: default case div = %d\n", __func__, div);
+			printk(KERN_ERR "%s: default case div = %d\n", __func__, div);
 			if(div != 0)
 				mci_writel(host, CKGEN_CTL,
 					mci_readl(host, CKGEN_CTL) & (~SDMMC_CRC_CLK_DIV_EN));
@@ -547,19 +531,19 @@ static void adjust_window(struct dw_mci_rtkemmc_host *priv,
 {
 	switch(loop_cnt) {
 	case 10:
-		pr_warn("try pad driving 3: %s = 0x%08x\n", w_type, window);
+		printk(KERN_ERR "try pad driving 3: %s = 0x%08x\n", w_type, window);
 		pinctrl_select_state(priv->pinctrl, priv->pins_tune3);
 		break;
 	case 20:
-		pr_warn("try pad driving 2: %s = 0x%08x\n", w_type, window);
+		printk(KERN_ERR "try pad driving 2: %s = 0x%08x\n", w_type, window);
 		pinctrl_select_state(priv->pinctrl, priv->pins_tune2);
                 break;
 	case 30:
-		pr_warn("try pad driving 1: %s = 0x%08x\n", w_type, window);
+		printk(KERN_ERR "try pad driving 1: %s = 0x%08x\n", w_type, window);
 		pinctrl_select_state(priv->pinctrl, priv->pins_tune1);
 		break;
 	case 40:
-		pr_warn("try pad driving 0: %s = 0x%08x\n", w_type, window);
+		printk(KERN_ERR "try pad driving 0: %s = 0x%08x\n", w_type, window);
 		pinctrl_select_state(priv->pinctrl, priv->pins_tune0);
 		break;
 	case 60:
@@ -733,12 +717,6 @@ static int dw_mci_rtk_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 		goto out;
 	}
 
-	if (priv->down_speed == 1) {
-                ret = mmc_cmdq_disable(mmc->card);
-                if (ret != 0)
-                        goto out;
-        }
-
 	ret = dw_mci_rtk_set_pinstates(priv, mmc->ios.timing);
 	if (ret) {
 		dev_err(mmc_dev(mmc),
@@ -791,7 +769,7 @@ static int dw_mci_rtk_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 			goto out;
 		}
 		dw_mci_rtk_phase_tuning(host, 0xff, rx_best);
-		dev_info(host->dev, "rx_window=0x%x, rx_best=0x%x\n", rx_window, rx_best);
+		printk(KERN_ERR "rx_window=0x%x, rx_best=0x%x\n", rx_window, rx_best);
 
 
 		/*dqs tuning in HS400 mode*/
@@ -827,11 +805,10 @@ static int dw_mci_rtk_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 
 			if(max==0) {
 				if(fail == false) {
-					dev_err(host->dev,
-						"DQS_RETRY: dqs tap bitmap = 0x%x\n", bitmap);
+					pr_err("DQS_RETRY: dqs tap bitmap= 0x%x\n", bitmap);
 					fail = true;
 					dqs_retry = true;
-					dev_info(host->dev, "try pad driving 7\n");
+					pr_err("try pad driving 7\n");
 					pinctrl_select_state(priv->pinctrl, priv->pins_tune4);
 				}
 				else {
@@ -846,7 +823,7 @@ static int dw_mci_rtk_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 				/*set the dqs dly tape*/
 				dqs_delay_tap_setting(host, reg);
 				dqs_retry = false;
-				dev_info(host->dev, "max sample point=%d, bitmap=0x%x, DQS=0x%x\n",
+				printk(KERN_ERR "max sample point=%d, bitmap=0x%x, DQS=0x%x\n",
 					max, bitmap, mci_readl(host, DQS_CTRL1));
 			}
 		}
@@ -876,7 +853,7 @@ static int dw_mci_rtk_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 
 	do {
 		dw_mci_rtk_query_protect_cmd(mmc, 0, &src);
-		dev_info(host->dev, "check write protect region 0 during tuning: 0x%x\n", src);
+		printk(KERN_INFO "check write protect region 0 during tuning: 0x%x\n", src);
 		if(src & BIT(0))
 			dw_mci_rtk_write_protect_cmd(mmc, 0, 0);
 
@@ -925,7 +902,7 @@ static int dw_mci_rtk_execute_tuning(struct dw_mci_slot *slot, u32 opcode)
 		goto out;
 	}
 	dw_mci_rtk_phase_tuning(host, tx_best, 0xff);
-	dev_info(host->dev, "tx_window=0x%x, tx_best=0x%x\n", tx_window, tx_best);
+	printk(KERN_ERR "tx_window=0x%x, tx_best=0x%x\n", tx_window, tx_best);
 
 out:
 	/*We send cmd 13 again because the eMMC handling might send command 12 more than twice.
@@ -937,152 +914,6 @@ out:
 	return ret;
 }
 
-
-static void dw_mci_rtk_enhanced_strobe(struct dw_mci_slot *slot)
-{
-	struct dw_mci *host = slot->host;
-	struct dw_mci_rtkemmc_host *priv = host->priv;
-	struct mmc_host *mmc = slot->mmc;
-	u32 tx_window = 0;
-	u32 tx_best = 0;
-	u32 tx_range = 0x10;
-	unsigned int bitmap = 0;
-	unsigned int max = 0;
-	unsigned int loop_cnt = 0;
-	unsigned int reg;
-	int i, j = 0, ret = 0;
-	bool fail = false;
-	bool dqs_retry = false;
-
-	if (host->dma_64bit_address)
-		mci_writew(host, CTRL_R_KENT, (mci_readb(host, CTRL_R_KENT) | BIT(8)));
-	else
-		mci_writew(host, CTRL_R, (mci_readb(host, CTRL_R) | BIT(8)));
-
-	ret = dw_mci_rtk_set_pinstates(priv, mmc->ios.timing);
-	if (ret) {
-		dev_err(mmc_dev(mmc),
-			"Failed to set pinstate err=%d\n", ret);
-		ret = -ENODEV;
-		goto out;
-	}
-
-	host->tuning = 1;
-
-	do {
-		/*dqs tuning in HS400 mode*/
-		if (fail == true)
-			pinctrl_select_state(priv->pinctrl, priv->pins_tune4);
-		else
-			pinctrl_select_state(priv->pinctrl, priv->pins_hs400);
-
-		for (i = 0; i < 0x20; i++) {
-			/*criteria is more than 5 continuous tap sample point*/
-			if (j >= 5)
-				max = j;
-			/*find the max tap length*/
-			if (j == 0 && max != 0)
-				break;
-
-			dqs_delay_tap_setting(host, (i<<1));
-
-			if (dw_mci_rtk_send_tuning(mmc, MMC_READ_MULTIPLE_BLOCK, 0x100, 1024) != 0) {
-				j = 0;
-			} else {
-				j++;
-				bitmap |= BIT(i);
-			}
-		}
-
-		if (max == 0) {
-			if (fail == false) {
-				dev_warn(mmc_dev(mmc), "DQS_RETRY: dqs tap bitmap = 0x%x\n", bitmap);
-				fail = true;
-				dqs_retry = true;
-				dev_err(mmc_dev(mmc), "try pad driving 7......\n");
-				pinctrl_select_state(priv->pinctrl, priv->pins_tune4);
-			} else {
-				ret = -EFAULT;
-				dev_err(mmc_dev(mmc), "Cannot find a proper dqs window, dqs tap bitmap=0x%x !\n", bitmap);
-				goto out;
-			}
-		} else {
-			reg = mci_readl(host, DQS_CTRL1) -2 -((max / 2) * 2);
-			/*set the dqs dly tape*/
-			dqs_delay_tap_setting(host, reg);
-			dqs_retry = false;
-			dev_info(mmc_dev(mmc), "max sample point = %d, bitmap = 0x%x, DQS = 0x%x\n",
-				max, bitmap, mci_readl(host, DQS_CTRL1));
-		}
-	} while (dqs_retry == true);
-
-	/*tx tuning */
-	if (fail == true)
-		pinctrl_select_state(priv->pinctrl, priv->pins_tune4);
-	else
-		pinctrl_select_state(priv->pinctrl, priv->pins_hs400);
-
-	do {
-		for (i = 0; i < tx_range; i++) {
-			dw_mci_rtk_phase_tuning(host, i, 0xff);
-#ifdef CONFIG_CHROME_PLATFORMS
-			if (dw_mci_rtk_send_tuning(mmc,
-				MMC_WRITE_MULTIPLE_BLOCK, 0x22, 1024))
-#else
-			if (dw_mci_rtk_send_tuning(mmc,
-					MMC_WRITE_MULTIPLE_BLOCK, 0xfe, 1024))
-#endif
-				tx_window = tx_window & ~BIT(i);
-			else
-				tx_window = tx_window | BIT(i);
-		}
-
-		if (tx_window == 0) {
-			dev_err(mmc_dev(mmc), "tx_window = 0, cannot find a proper tx phase\n");
-			ret = -EFAULT;
-			goto out;
-		} else if(tx_window == 0xffff && mmc->ios.timing == MMC_TIMING_MMC_HS400) {
-			loop_cnt++;
-			adjust_window(priv, "tx_window", loop_cnt, tx_window);
-		}
-	} while((tx_window == 0xffff && mmc->ios.timing == MMC_TIMING_MMC_HS400)
-		&& loop_cnt < 60);
-
-	if (fail == true)
-		pinctrl_select_state(priv->pinctrl, priv->pins_tune4);
-	else
-		pinctrl_select_state(priv->pinctrl, priv->pins_hs400);
-
-	tx_best = search_best(tx_window, tx_range);
-
-	if (tx_best == 0xff) {
-		ret = -EFAULT;
-		dev_err(mmc_dev(mmc), "no 6 continuous points for tx phase\n");
-		goto out;
-	}
-
-	dw_mci_rtk_phase_tuning(host, tx_best, 0xff);
-	dev_info(mmc_dev(mmc), "hs400es: tx_window = 0x%x, tx_best = 0x%x\n", tx_window, tx_best);
-
-out:
-	/*We send cmd 13 again because the eMMC handling might send command 12 more than twice.
-	  After kernel 5.4, system might send cmd13 first before issuing any command,
-	  user will see the illegal command status because the emmc tuning error handling*/
-	dw_mci_rtk_send_tuning(mmc, MMC_SEND_STATUS, 0x10000, 0);
-	host->tuning = 0;
-
-	if (ret != 0) {
-		dev_warn(host->dev, "HS400es tuning failed and down speed to hs200\n"); 
-		host->pdata->caps &= ~MMC_CAP_1_8V_DDR;
-		host->pdata->caps2 &= ~ (MMC_CAP2_HS400_1_8V | MMC_CAP2_HS400_ES);
-		mmc->caps &= MMC_CAP_NONREMOVABLE | MMC_CAP_4_BIT_DATA | MMC_CAP_8_BIT_DATA;
-		mmc->card->mmc_avail_type &= ~ (EXT_CSD_CARD_TYPE_HS400ES | EXT_CSD_CARD_TYPE_HS400_1_8V);
-		priv->emmc_mode = 2;
-		priv->down_speed = 1;
-		mmc_hw_reset(mmc);
-	}
-
-}
 
 static void dw_mci_rtk_set_ios(struct dw_mci_slot *slot, struct mmc_ios *ios)
 {
@@ -1128,9 +959,6 @@ static void dw_mci_rtk_set_ios(struct dw_mci_slot *slot, struct mmc_ios *ios)
 	udelay(10);
 	mci_writel(host, OTHER1, mci_readl(host, OTHER1) | SDMMC_TOP_RST_N_FIFO);
 	udelay(10);
-
-	if (ios->enhanced_strobe)
-		dw_mci_rtk_enhanced_strobe(slot);
 }
 
 static int dw_mci_rtk_switch_voltage(struct mmc_host *mmc, struct mmc_ios *ios)
@@ -1217,7 +1045,7 @@ static void dw_mci_rtk_hs400_complete(struct mmc_host *mmc)
 			MMC_SEND_TUNING_BLOCK_HS200);
 
 	if(err!=0) {
-		dev_warn(host->dev, "HS400 tuning failed and down speed to hs200, err=%d\n",
+		dev_err(host->dev, "HS400 tuning failed and down speed to hs200, err=%d\n",
 			err);
 		host->pdata->caps &= ~MMC_CAP_1_8V_DDR;
 		host->pdata->caps2 &= ~MMC_CAP2_HS400_1_8V;
@@ -1312,21 +1140,10 @@ static int dw_mci_rtk_parse_dt(struct dw_mci *host)
 	prop = of_get_property(host->dev->of_node, "speed-step", &size);
 	if (prop) {
 		priv->emmc_mode = of_read_number(prop, 1);
-		dev_info(host->dev, "emmc mode : %d\n", priv->emmc_mode);
+		printk(KERN_ERR "[%s] emmc mode : %d\n", __func__, priv->emmc_mode);
 	} else {
-		dev_info(host->dev, "use default emmc sdr50 mode !\n");
+		printk(KERN_ERR "[%s] use default emmc sdr50 mode !\n", __func__);
 	}
-
-	priv->dma_64bit_address = 0;
-        prop = of_get_property(host->dev->of_node, "dma_64bit", &size);
-        if (prop) {
-                priv->dma_64bit_address = of_read_number(prop, 1);
-                dev_info(host->dev, "dma_64bit : %d\n", priv->dma_64bit_address);
-		host->dma_64bit_address = priv->dma_64bit_address;
-        } else {
-		dev_info(host->dev,  "dma_64bit default : %d\n", priv->dma_64bit_address);
-                host->dma_64bit_address = 0;
-        }
 
 	/*In Parker platform, only PKG SOC can run HS400 mode*/
 	if (priv->emmc_mode == 3) {
@@ -1337,18 +1154,18 @@ static int dw_mci_rtk_parse_dt(struct dw_mci *host)
 		prop = of_get_property(host->dev->of_node, "enforce", &size);
 		if (prop) {
 			priv-> enforce = of_read_number(prop, 1);
-			dev_info(host->dev, "enforce value: %d\n", priv->enforce);
+			printk(KERN_ERR "[%s] enforce value: %d\n", __func__, priv->enforce);
 		}
 
 		cell = nvmem_cell_get(host->dev, "emmc_pkg_cal");
 		if (IS_ERR(cell)) {
-			dev_info(host->dev, "cannot get the uuid info !\n");
+			printk(KERN_INFO "cannot get the uuid info !\n");
 			priv->emmc_mode = 3;
 			goto out;
 		}
 
 		buf = nvmem_cell_read(cell, &buf_size);
-		dev_info(host->dev, "otp_emmc_pkg_cal = 0x%x\n", buf[0]);
+		pr_info("%s: otp_emmc_pkg_cal = 0x%x\n", __func__, buf[0]);
 		if ((buf[0] & BIT(0)) == 0 &&  priv->enforce == 0)
 			priv->emmc_mode = 2;
 		else
@@ -1357,29 +1174,29 @@ static int dw_mci_rtk_parse_dt(struct dw_mci *host)
 		kfree(buf);
 		nvmem_cell_put(cell);
 out:
-		dev_info(host->dev, "priv->emmc_mode = %d\n", priv->emmc_mode);
+		printk(KERN_INFO "priv->emmc_mode = %d\n", priv->emmc_mode);
 	}
 
 	priv->is_cqe = 0;
 	prop = of_get_property(host->dev->of_node, "cqe", &size);
 	if (prop) {
 		priv->is_cqe = of_read_number(prop, 1);
-		dev_info(host->dev, "cmdq mode : %d\n", priv->is_cqe);
+		printk(KERN_ERR "[%s] cmdq mode : %d\n", __func__, priv->is_cqe);
 	} else {
-		dev_info(host->dev, "use default eMMC legacy mode !\n");
+		printk(KERN_ERR "[%s] use default eMMC legacy mode !\n", __func__);
 	}
 	prop = of_get_property(host->dev->of_node, "rdq-ctrl", &size);
 	if (prop) {
 		priv->rdq_ctrl = of_read_number(prop, 1);
-		dev_info(host->dev, "get rdq-ctrl : %u\n", priv->rdq_ctrl);
+		printk(KERN_INFO "[%s] get rdq-ctrl : %u\n", __func__, priv->rdq_ctrl);
 	} else {
 		priv->rdq_ctrl = 0;
-		dev_info(host->dev, "no dqs_dly_tape switch node, use default 0x0 !! \n");
+		printk(KERN_ERR "[%s] no dqs_dly_tape switch node, use default 0x0 !! \n", __func__);
 	}
 
 	priv->m2tmx = syscon_regmap_lookup_by_phandle(host->dev->of_node, "realtek,m2tmx");
 	if (IS_ERR_OR_NULL(priv->m2tmx))
-		dev_err(host->dev, "can not get m2mtx node.\n");
+		printk(KERN_ERR "%s: can not get m2mtx node.\n", __func__);
 
 	host->priv = priv;
 
@@ -1398,8 +1215,6 @@ static int dw_mci_rtk_init(struct dw_mci *host)
 		host->pdata->caps |= MMC_CAP_1_8V_DDR;
 		host->pdata->caps2 |= MMC_CAP2_HS400_1_8V;
 	}
-	if (priv->emmc_mode >= 4)
-		host->pdata->caps2 |= MMC_CAP2_HS400_ES;
 
 	if (priv->is_cqe > 0)
 		host->pdata->caps2 |= (MMC_CAP2_CQE|MMC_CAP2_CQE_DCMD);
@@ -1407,6 +1222,7 @@ static int dw_mci_rtk_init(struct dw_mci *host)
 	priv->protect_start = 0;
 	priv->protect_unit = 0;
 	priv->protect_cnt = 0;
+	host->dma_64bit_address = 0;
 
 	/*In Realtek Platform, do not use PIO mode by default*/
 	host->use_dma = TRANS_MODE_DMA;
@@ -1420,16 +1236,10 @@ static int dw_mci_rtk_init(struct dw_mci *host)
 
 	mci_writel(host, OTHER1, mci_readl(host, OTHER1) & (~(BIT(12)|BIT(13))));
 
-	if (!host->dma_64bit_address) {
-		/*Set the eMMC wrapper little Endian*/
-		mci_writel(host, AHB, mci_readl(host, AHB)|BIT(2));
-		mci_writel(host, OTHER1,
-			mci_readl(host, OTHER1) | SDMMC_STARK_CARD_STOP_ENABLE);
-	} else {
-		//host->pdata->caps2 |= MMC_CAP2_CRYPTO;
-		mci_writel(host, OTHER1,
-                        mci_readl(host, OTHER1) | SDMMC_STARK_CARD_STOP_ENABLE | SDMMC_64BIT_ENABLE);
-	}
+	/*Set the eMMC wrapper little Endian*/
+	mci_writel(host, AHB, mci_readl(host, AHB)|BIT(2));
+	mci_writel(host, OTHER1,
+		mci_readl(host, OTHER1) | SDMMC_STARK_CARD_STOP_ENABLE);
 
 	/*set eMMC instead of nand*/
 	regmap_update_bits_base(priv->m2tmx, SDMMC_NAND_DMA_SEL,
@@ -1449,9 +1259,9 @@ static int dw_mci_rtk_suspend(struct device *dev)
 
 	ret = dw_mci_cqe_runtime_suspend(dev);
 
-	if ((soc_device_match(rtk_soc)))
-		mci_writel(host, AHB, 0);
-	dev_info(host->dev, "dw_mci_cqe_suspend ret=%d\n", ret);
+	mci_writel(host, AHB, 0);
+	printk(KERN_ERR "[%s] AHB=0x%x, dw_mci_cqe_suspend ret=%d\n",
+		__func__, mci_readl(host, AHB), ret);
 
 	return ret;
 }
@@ -1461,12 +1271,12 @@ static int dw_mci_rtk_resume(struct device *dev)
 	struct dw_mci *host = dev_get_drvdata(dev);
 	int ret = 0;
 
-	if ((soc_device_match(rtk_soc)))
-		mci_writel(host, AHB, mci_readl(host, AHB)|BIT(2));
+	mci_writel(host, AHB, mci_readl(host, AHB)|BIT(2));
 
 	ret = dw_mci_cqe_runtime_resume(dev);
 
-	dev_info(host->dev, "dw_mci_cqe_resume ret=%d\n", ret);
+	printk(KERN_ERR "[%s] AHB=0x%x, dw_mci_cqe_resume ret=%d\n",
+		__func__, mci_readl(host, AHB), ret);
 
 	return ret;
 }
@@ -1494,7 +1304,7 @@ static const struct dev_pm_ops rtk_dev_pm_ops = {
 
 static void dw_mci_rtk_shutdown(struct platform_device *pdev)
 {
-	dev_info(&pdev->dev, "[eMMC] Shutdown\n");
+	printk(KERN_ERR "[eMMC] Shutdown\n");
 	dw_mci_cqe_runtime_resume(&pdev->dev);
 }
 
@@ -1538,12 +1348,6 @@ static int dw_mci_rtk_probe(struct platform_device *pdev)
 	match = of_match_node(dw_mci_rtk_match, pdev->dev.of_node);
 	drv_data = match->data;
 
-	ret = dw_mci_pltfm_register(pdev, drv_data);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "device register pltfm failed (ret=%d\n",ret);
-		return -EPROBE_DEFER;
-	}
-
 	ret = device_create_file(&pdev->dev, &dev_attr_protect_region_setting);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "device_create_setting_file fail (ret=%d)\n",
@@ -1570,7 +1374,7 @@ static int dw_mci_rtk_probe(struct platform_device *pdev)
 			ret);
 	}
 
-	return ret;
+	return dw_mci_pltfm_register(pdev, drv_data);
 }
 
 int dw_mci_rtk_remove(struct platform_device *pdev)

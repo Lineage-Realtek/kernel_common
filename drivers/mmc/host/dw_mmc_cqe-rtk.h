@@ -129,7 +129,5 @@ struct dw_mci_rtkemmc_host {
 	unsigned int		protect_unit;
 	unsigned int            protect_cnt;
 	unsigned int		enforce;
-	unsigned int		down_speed;
-	int			dma_64bit_address;
 };
 #endif
