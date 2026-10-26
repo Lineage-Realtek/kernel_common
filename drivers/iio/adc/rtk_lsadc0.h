@@ -92,11 +92,5 @@
 #define CRT_LSADC_VDDMUX_EN_MASK	BIT(1)
 #define CRT_LSADC_PG_VALUE		CRT_LSADC_VDDMUX_EN_MASK
 
-/* CRT base addr 0x98000000 */
-enum rtk_crt_registers {
-	LSADC_PG = 0x034c,
-};
-
-#define LSADC_INVALID_BASELINE		0xFFFFFFFF
 #endif /*__RTK_LSADC0_H_ */
 

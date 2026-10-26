@@ -19,8 +19,6 @@
 #include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/reset.h>
-#include <linux/mfd/syscon.h>
-#include <linux/regmap.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
@@ -62,8 +60,8 @@ struct rtk_lsadc_state {
 	struct device			*dev;
 	struct rtk_lsadc_info		lsadc[1];
 	uint				crt_lsadc_pg_val;
+	void __iomem			*crt_lsadc_pg_addr;
 	void __iomem			*lsadc_addr;
-	struct regmap			*crt_base;
 	struct clk			*clk;
 	struct reset_control		*rstc;
 	uint				rising_evt_cfg;
@@ -113,7 +111,6 @@ static irqreturn_t lsadc0_interrupt_pad(int irq, void *data)
 	uint reg;
 	uint addr;
 	int i, j;
-	uint baseline;
 
 	for (i = 0; i < 2; i++) {
 		addr = (i ? LSADC0_PAD1_LEVEL_SET0_ADDR : LSADC0_PAD0_LEVEL_SET0_ADDR);
@@ -164,12 +161,9 @@ static irqreturn_t lsadc0_interrupt_pad(int irq, void *data)
 			dev_dbg(st->dev, "[LSADC] pad0 adc became bigger!\n\n");
 
 			/* set adc_val0 to base line */
-			baseline = st->lsadc[0].pad[0].adc_val_baseline;
-			if (baseline != LSADC_INVALID_BASELINE) {
-				pad0_reg = (pad0_reg & ~LSADC0_PAD_ADC_VAL_MASK) |
-					   baseline;
-				LSADC_WRITEL(pad0_reg, LSADC0_PAD0_ADDR);
-			}
+			pad0_reg = (pad0_reg & ~LSADC0_PAD_ADC_VAL_MASK) |
+				   st->lsadc[0].pad[0].adc_val_baseline;
+			LSADC_WRITEL(pad0_reg, LSADC0_PAD0_ADDR);
 
 			if (st->rising_evt_cfg & BIT(0))
 				iio_push_event(idev,
@@ -202,12 +196,9 @@ static irqreturn_t lsadc0_interrupt_pad(int irq, void *data)
 			dev_dbg(st->dev, "[LSADC] pad1 adc became bigger!\n\n");
 
 			/* set adc_val0 to base line */
-			baseline = st->lsadc[0].pad[1].adc_val_baseline;
-			if (baseline != LSADC_INVALID_BASELINE) {
-				pad1_reg = (pad1_reg & ~LSADC0_PAD_ADC_VAL_MASK) |
-					   baseline;
-				LSADC_WRITEL(pad1_reg, LSADC0_PAD1_ADDR);
-			}
+			pad1_reg = (pad1_reg & ~LSADC0_PAD_ADC_VAL_MASK) |
+				   st->lsadc[0].pad[1].adc_val_baseline;
+			LSADC_WRITEL(pad1_reg, LSADC0_PAD1_ADDR);
 
 			if (st->rising_evt_cfg & BIT(1))
 				iio_push_event(idev,
@@ -868,10 +859,7 @@ static void rtk_lsadc_hw_init(struct iio_dev *idev)
 		}
 
 		/* set adc_val0 to base line */
-		if (st->lsadc[0].pad[0].adc_val_baseline != LSADC_INVALID_BASELINE)
-			st->lsadc[0].pad[0].adc_val0 = st->lsadc[0].pad[0].adc_val_baseline;
-		else
-			st->lsadc[0].pad[0].adc_val0 = 0;
+		st->lsadc[0].pad[0].adc_val0 = st->lsadc[0].pad[0].adc_val_baseline;
 		pad0_reg = (pad0_reg & ~LSADC0_PAD_ADC_VAL_MASK) | st->lsadc[0].pad[0].adc_val0;
 
 		/* enable IIO events */
@@ -905,10 +893,7 @@ static void rtk_lsadc_hw_init(struct iio_dev *idev)
 		}
 
 		/* set adc_val0 to base line */
-		if (st->lsadc[0].pad[1].adc_val_baseline != LSADC_INVALID_BASELINE)
-			st->lsadc[0].pad[1].adc_val0 = st->lsadc[0].pad[1].adc_val_baseline;
-		else
-			st->lsadc[0].pad[1].adc_val0 = 0;
+		st->lsadc[0].pad[1].adc_val0 = st->lsadc[0].pad[1].adc_val_baseline;
 		pad1_reg = (pad1_reg & ~LSADC0_PAD_ADC_VAL_MASK) | st->lsadc[0].pad[1].adc_val0;
 
 		/* enable IIO events */
@@ -953,7 +938,7 @@ static void rtk_lsadc_hw_init(struct iio_dev *idev)
 		ctrl_reg, lsadc_status_reg, pad0_reg, pad1_reg);
 
 	/* Init CRT LSADC PG */
-	regmap_write(st->crt_base, LSADC_PG, st->crt_lsadc_pg_val);
+	writel(st->crt_lsadc_pg_val, st->crt_lsadc_pg_addr);
 	dev_dbg(st->dev, "[LSADC] write crt_lsadc_pg_val=0x%x\n",
 		st->crt_lsadc_pg_val);
 
@@ -1077,12 +1062,7 @@ static int rtk_lsadc_probe(struct platform_device *pdev)
 	st->dev = dev;
 	st->lsadc[0].irq = irq_num;
 	st->lsadc_addr = of_iomap(pdev->dev.of_node, 0);
-	st->crt_base = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
-						       "realtek,crt");
-	if (IS_ERR_OR_NULL(st->crt_base)) {
-		dev_err(dev,  "Fail to get crt_base address\n");
-		return  -ENODEV;
-	}
+	st->crt_lsadc_pg_addr = of_iomap(pdev->dev.of_node, 1);
 
 	platform_set_drvdata(pdev, idev);
 
@@ -1123,9 +1103,9 @@ static int rtk_lsadc_probe(struct platform_device *pdev)
 		st->lsadc[0].pad[0].threshold = val;
 
 	if (!of_property_read_u32(lsadc0_pad0_node, "adc_val_baseline", &val))
-		st->lsadc[0].pad[0].adc_val_baseline = val & LSADC0_PAD_ADC_VAL_MASK;
+		st->lsadc[0].pad[0].adc_val_baseline = val;
 	else
-		st->lsadc[0].pad[0].adc_val_baseline = LSADC_INVALID_BASELINE;
+		st->lsadc[0].pad[0].adc_val_baseline = LSADC0_PAD_ADC_VAL_MASK;
 
 	/* set LSADC0 pad1 from device tree : lsadc0-pad1 */
 	if (!of_property_read_u32(lsadc0_pad1_node, "activate", &val)) {
@@ -1152,7 +1132,7 @@ static int rtk_lsadc_probe(struct platform_device *pdev)
 	if (!of_property_read_u32(lsadc0_pad1_node, "adc_val_baseline", &val))
 		st->lsadc[0].pad[1].adc_val_baseline = val & LSADC0_PAD_ADC_VAL_MASK;
 	else
-		st->lsadc[0].pad[1].adc_val_baseline = LSADC_INVALID_BASELINE;
+		st->lsadc[0].pad[1].adc_val_baseline = LSADC0_PAD_ADC_VAL_MASK;
 
 	st->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(st->clk)) {
