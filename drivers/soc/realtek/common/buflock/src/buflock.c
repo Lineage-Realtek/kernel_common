@@ -37,7 +37,6 @@ struct buflock_handle {
     struct kref             ref;
     struct list_head        list; /* module->handles */
     struct mutex            mutex;
-    int                     release_timeout_report;
 
     size_t                  id;
     unsigned int            fwid;
@@ -78,7 +77,6 @@ struct buflock_client {
 
 struct buflock_module {
     struct mutex            handles_lock;
-    struct mutex            handles_ref_lock;
     struct list_head        handles;
     struct list_head        free_handles;
     wait_queue_head_t       free_queue;
@@ -100,7 +98,6 @@ struct buflock_module {
     unsigned int            release_loop_ms;
     unsigned int            destroy_timeout_ms;
     size_t                  max_handles;
-    size_t                  release_timeout_cnt;
 };
 
 static struct buflock_handle *  buflock_handle_create               (struct buflock_module * module, size_t id, buflock_fwid_t fwid, buflock_status_t * pStatus);
@@ -161,7 +158,6 @@ static struct buflock_handle * buflock_handle_create(struct buflock_module * mod
         ret->id         = id;
         ret->fwid       = fwid;
         ret->pStatus    = pStatus;
-        ret->release_timeout_report = 1;
 
         ret->destroy    = buflock_handle_destroy;
         ret->getFWID    = buflock_handle_get_fwid;
@@ -198,14 +194,7 @@ static void buflock_handle_get(struct buflock_handle * handle)
 
 static void buflock_handle_put(struct buflock_handle * handle)
 {
-    struct buflock_module * module = handle->module;
-    if (module) {
-        mutex_lock(&module->handles_ref_lock);
-        kref_put(&handle->ref, handle->destroy);
-        mutex_unlock(&module->handles_ref_lock);
-    } else {
-        kref_put(&handle->ref, handle->destroy);
-    }
+    kref_put(&handle->ref, handle->destroy);
 }
 
 static unsigned int buflock_handle_refCount(struct buflock_handle * handle)
@@ -389,25 +378,10 @@ static int buflock_module_free_thread(void *data)
                         {
                             ktime_t now = ktime_get();
                             if (ktime_ms_delta(now, handle->sTime.destroy) > module->destroy_timeout_ms) {
-#if 0
-                                /*
-                                 * Remove watchdog as requested by VFW.
-                                 * Related JIRA: SW-7283, DHCDANVERS-925
-                                 */
                                 remove = true;
                                 pr_err("%s Destroy handle(%p) timeout! ***FORCED RELEASE*** (id=%zu fwid=%u, status=%s)\n",
                                         MODULE_TAG, handle,
                                         handle->id, handle->getFWID(handle), getStatusStr(handle->getStatus(handle)));
-#else
-                                pr_err("%s Destroy handle(%p) TIMEOUT! Please check buffer status (id=%zu fwid=%u, status=%s)\n",
-                                        MODULE_TAG, handle,
-                                        handle->id, handle->getFWID(handle), getStatusStr(handle->getStatus(handle)));
-
-                                if (handle->release_timeout_report) {
-                                    module->release_timeout_cnt++;
-                                    handle->release_timeout_report--;
-                                }
-#endif
                             }
                         }
                         break;
@@ -432,20 +406,18 @@ static struct buflock_handle * buflock_module_handle_get_by_fwid (struct buflock
 {
     struct buflock_handle * ret = NULL;
 
-    mutex_lock(&module->handles_ref_lock);
     mutex_lock(&module->handles_lock);
     {
         struct buflock_handle * handle, * tmp_handle;
         list_for_each_entry_safe(handle,  tmp_handle, &module->handles, list) {
-            if (handle && handle->getFWID(handle) == fwid) {
-                handle->get(handle);
+            if (handle && buflock_handle_get_fwid(handle) == fwid) {
+                buflock_handle_get(handle);
                 ret = handle;
                 break;
             }
         }
     }
     mutex_unlock(&module->handles_lock);
-    mutex_unlock(&module->handles_ref_lock);
     return ret;
 }
 
@@ -488,11 +460,9 @@ static int __init buflock_module_init (void)
         module->destroy_timeout_ms = 5000;
         module->max_handles = 4096;
         module->next_id = 0;
-        module->release_timeout_cnt = 0;
         INIT_LIST_HEAD(&module->handles);
         INIT_LIST_HEAD(&module->free_handles);
         mutex_init(&module->handles_lock);
-        mutex_init(&module->handles_ref_lock);
 
         INIT_LIST_HEAD(&module->clients);
         mutex_init(&module->clients_lock);
@@ -512,7 +482,7 @@ static int __init buflock_module_init (void)
 		break;
 	}
 
-	module->dev_class = class_create(MODULE_NAME);
+	module->dev_class = class_create(THIS_MODULE, MODULE_NAME);
 
 	module->device = device_create(
 			module->dev_class,     // class
@@ -566,25 +536,6 @@ static void __exit buflock_module_exit(void)
     if (!module)
         return;
 
-    mutex_lock(&module->clients_lock);
-    {
-        struct buflock_client * client, * tmp_client;
-        list_for_each_entry_safe(client,  tmp_client, &module->clients, list) {
-            mutex_lock(&client->mutex);
-            {
-                struct buflock_slot * slot, * tmp_slot;
-                list_for_each_entry_safe(slot,  tmp_slot, &client->slots, list) {
-                    list_del(&slot->list);
-                    buflock_slot_destroy(slot);
-                }
-                list_del(&client->list);
-                client->module = NULL;
-            }
-            mutex_unlock(&client->mutex);
-        }
-    }
-    mutex_unlock(&module->clients_lock);
-
     kthread_stop(module->kthread);
 
     {
@@ -625,7 +576,6 @@ static void __exit buflock_module_exit(void)
 
 
     mutex_destroy(&module->handles_lock);
-    mutex_destroy(&module->handles_ref_lock);
     mutex_destroy(&module->clients_lock);
 
     kfree(module);
@@ -648,10 +598,8 @@ static struct buflock_slot * buflock_slot_create(struct buflock_handle * handle)
 
 static void buflock_slot_destroy(struct buflock_slot * slot)
 {
-    struct buflock_handle * handle = slot->handle;
-    slot->handle = NULL;
-    if (handle) {
-        handle->put(handle);
+    if (slot->handle) {
+        slot->handle->put(slot->handle);
     }
     kfree(slot);
 }
@@ -682,7 +630,7 @@ static struct buflock_client * buflock_client_create(struct buflock_module * mod
             if (task)
                 get_task_comm(ret->task_comm, task);
             else
-                strncpy(ret->task_comm, "KTHREAD", sizeof(ret->task_comm));
+                strcpy(ret->task_comm, "KTHREAD");
 
             put_task_struct(current->group_leader);
         }
@@ -924,9 +872,6 @@ static ssize_t buflock_fops_read (struct file *file, char *buf, size_t size, lof
 			 (long unsigned int) module->uStatusPhyAddr,
 			 module->max_handles,
 			 module->release_loop_ms, module->destroy_timeout_ms);
-
-        s += snprintf(s, size, " RELEASE_TIMEOUT=%zu\n",
-                module->release_timeout_cnt);
 
         s += snprintf(s, size, "    clients:\n");
         mutex_lock(&module->clients_lock);
