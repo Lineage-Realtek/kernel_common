@@ -38,7 +38,6 @@
 #include <linux/of_gpio.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/pm_runtime.h>
-#include <linux/sys_soc.h>
 
 #include "../core/card.h"
 #include "../core/host.h"
@@ -67,14 +66,6 @@ irqreturn_t cqhci_irq(struct mmc_host *mmc, u32 intmask, int cmd_error, int data
 static void cmd_complete(struct dw_mci *host, u16 interrupt, int *cmd_error);
 static void data_complete(struct dw_mci *host, u16 interrupt, int *data_error);
 
-static const struct soc_device_attribute rtk_soc[] = {
-	{ .family = "Realtek Stark", },
-	{ .family = "Realtek Groot",},
-	{ .family = "Realtek Parker", },
-	{ .family = "Realtek RTD1325", },
-	{ .family = "Realtek Danvers", },
-	{ /* empty */ } };
-
 #if 0
 static void print_reg(struct dw_mci *host)
 {
@@ -93,10 +84,10 @@ static void print_reg(struct dw_mci *host)
 
 static void dw_mci_cqhci_regs_show(struct dw_mci *host)
 {
-        dev_err(host->dev, "CQIS = 0x%x, TCN = 0x%x, TDBR = 0x%x, TCLR = 0x%x\n",
+        pr_err("CQIS = 0x%x, TCN = 0x%x, TDBR = 0x%x, TCLR = 0x%x\n",
                 readl(host->cqe->mmio + CQHCI_IS), readl(host->cqe->mmio + CQHCI_TCN),
                 readl(host->cqe->mmio + CQHCI_TDBR), readl(host->cqe->mmio + CQHCI_TCLR));
-        dev_err(host->dev, "TERRI = 0x%x, RSIDX = 0x%x, RSARG = 0x%x\n",
+        pr_err("TERRI = 0x%x, RSIDX = 0x%x, RSARG = 0x%x\n",
                 readl(host->cqe->mmio + CQHCI_TERRI), readl(host->cqe->mmio + CQHCI_CRI),
                 readl(host->cqe->mmio + CQHCI_CRA));
 }
@@ -106,7 +97,7 @@ static void dw_mci_cqhci_dumpregs(struct mmc_host *mmc)
 	struct dw_mci_slot *slot = mmc_priv(mmc);
 	struct dw_mci *host = slot->host;
 
-	dev_err(host->dev,"cmd idx 0x%08x\n", mci_readw(host, CMD_R));
+	pr_err("%s: cmd idx 0x%08x\n", __func__, mci_readw(host, CMD_R));
 }
 
 static void dw_mci_cqhci_set_tran_desc(u8 *desc,
@@ -204,7 +195,7 @@ static void dw_mci_cqe_enable(struct mmc_host *mmc)
 	cqhci_writel(host->cqe, 0, CQHCI_CTL);
 
 	if (cqhci_readl(host->cqe, CQHCI_CTL) && CQHCI_HALT) {
-		dev_err(host->dev, "%s: cqhci: CQE failed to exit halt state\n",
+		pr_err("%s: cqhci: CQE failed to exit halt state\n",
 			mmc_hostname(mmc));
 	}
 
@@ -213,83 +204,10 @@ static void dw_mci_cqe_enable(struct mmc_host *mmc)
 	dw_mci_en_cqe_int(host);
 }
 
-#ifdef CONFIG_MMC_CRYPTO
-static int crpyto_init(struct dw_mci *host, u8 crypto_mode, u32 cryptoCFG_i, const union cqhci_crypto_cfg_entry *cfg){
-	//AES crypto mode
-	// 1: XTS 256bit
-
-	//Data unit Size
-	//0x01: 512B
-	//0x02: 1KB
-	//0x04: 2KB
-	//0x08: 4KB
-	//0x10: 8KB
-	//0x20: 16KB
-	//0x40: 32KB
-	//0x80: 64KB
-	u8 d_unit_s = 0x1;
-	u32 i = 0;
-	u32 cfg_16;
-
-	cqhci_writel(host->cqe, cqhci_readl(host->cqe,CQHCI_CFG) | 0x2, CQHCI_CFG); //Crypto General Enable
-
-	for (i = 0; i < 16; i++) {
-                cfg_16 = (0x80000000 | crypto_mode << 8 | d_unit_s);
-		cqhci_writel(host->cqe, cfg_16, (CRYPTOCFG_0_16 + i * 0x80));
-        }
-
-	/* Write the key */
-	for (i = 0; i < 16; i++)
-		cqhci_writel(host->cqe, le32_to_cpu(cfg->reg_val[i]),
-				(CRYPTOCFG_0_0 + i * 4));
-
-	pr_info("!!! crypto done !!!\n");
-	return 0;
-}
-
-static int crpyto_decrypt(struct dw_mci *host)
-{
-	return 0;
-}
-
-static int dw_mci_cqhci_program_key(struct cqhci_host *cq_host,
-				 const union cqhci_crypto_cfg_entry *cfg,
-				 int slot)
-{
-	struct mmc_host *mmc = cq_host->mmc;
-	struct dw_mci_slot *slott = mmc_priv(mmc);
-	struct dw_mci *host = slott->host;
-	union cqhci_crypto_cap_entry cap;
-
-	if (!host->dma_64bit_address) {
-		mmc->caps2 &= ~MMC_CAP2_CRYPTO;
-		return 0;
-	}
-
-	/* Only AES-256-XTS has been tested so far. */
-	cap = cq_host->crypto_cap_array[cfg->crypto_cap_idx];
-	if (cap.algorithm_id != CQHCI_CRYPTO_ALG_AES_XTS ||
-		cap.key_size != CQHCI_CRYPTO_KEY_SIZE_256) {
-		return -EINVAL;
-	}
-
-	pr_err("dw_mci_cqhci_program_key, cap.algorithm_id = 0x%x, cap.key_size = 0x%x\n",
-		cap.algorithm_id, cap.key_size);
-
-	if (cfg->config_enable & CQHCI_CRYPTO_CONFIGURATION_ENABLE)
-		return crpyto_init(host, 1, 0, cfg);
-	else
-		return crpyto_decrypt(host);
-}
-#endif
-
 static const struct cqhci_host_ops dw_mci_cqhci_host_ops = {
 	.enable = dw_mci_cqe_enable,
 	.dumpregs = dw_mci_cqhci_dumpregs,
 	.setup_tran_desc = dw_mci_cqhci_setup_tran_desc,
-#ifdef CONFIG_MMC_CRYPTO
-	.program_key	= dw_mci_cqhci_program_key,
-#endif
 };
 
 #ifdef CONFIG_OF
@@ -339,7 +257,7 @@ static void dw_mci_cmd_timer(struct timer_list *t)
 	struct dw_mci *host = from_timer(host, t, timer);;
 
 	if(host->int_waiting) {
-		dev_err(host->dev, "fired, opcode=%d, arg=0x%x, irq status=0x%x, err irq status=0x%x, auto err irq status=0x%x\n",
+		pr_err("%s fired, opcode=%d, arg=0x%x, irq status=0x%x, err irq status=0x%x, auto err irq status=0x%x\n", __func__,
 			host->opcode, host->arg,
 			host->normal_interrupt, host->error_interrupt, host->auto_error_interrupt);
 		dw_mci_clr_signal_int(host);
@@ -463,8 +381,8 @@ static irqreturn_t dw_mci_interrupt(int irq, void *dev_id)
 	if(host->pdata && (host->pdata->caps2 & MMC_CAP2_CQE) &&
 		mmc->cqe_on==true && cq_host->activated==true) {
 		if(host->normal_interrupt & SDMMC_ERR_INTERRUPT) {
-			dev_err(host->dev, "cmdq error: interrupt status=%08x, error interrupt=0x%08x, adma error = 0x%x\n",
-				host->normal_interrupt, host->error_interrupt, mci_readb(host, ADMA_ERR_STAT_R));
+			pr_err("%s: cmdq error: interrupt status=%08x, error interrupt=0x%08x\n",
+				__func__, host->normal_interrupt, host->error_interrupt);
 			dw_mci_cqhci_regs_show(host);
 
 			cmd_complete(host, host->error_interrupt, &cmd_error);
@@ -489,23 +407,16 @@ static void dw_mci_setup(struct dw_mci *host)
 	/*This IP regiter setting should be more flexible accordding to the SD, EMMC, or UHS2 in the future*/
 	mci_writeb(host, SW_RST_R, (SDMMC_SW_RST_ALL|SDMMC_SW_RST_CMD|SDMMC_SW_RST_DAT));
 	mci_writeb(host, TOUT_CTRL_R, 0xe);
-	if (!host->dma_64bit_address) {
-		mci_writew(host, HOST_CTRL2_R, SDMMC_HOST_VER4_ENABLE|SDMMC_SIGNALING_EN);
-		mci_writeb(host, CTRL_R, SDMMC_RST_N_OE|SDMMC_RST_N|SDMMC_CARD_IS_EMMC);
-		mci_writeb(host, MSHC_CTRL_R, mci_readb(host, MSHC_CTRL_R) & (~SDMMC_CMD_CONFLICT_CHECK));
-	} else {
-		mci_writew(host, HOST_CTRL2_R, SDMMC_HOST_VER4_ENABLE|SDMMC_SIGNALING_EN | SDMMC_HOST_ADDRESSING);
-		mci_writeb(host, CTRL_R_KENT, SDMMC_RST_N_OE|SDMMC_RST_N|SDMMC_CARD_IS_EMMC);
-		mci_writeb(host, MSHC_CTRL_R_KENT, mci_readb(host, MSHC_CTRL_R_KENT) & (~SDMMC_CMD_CONFLICT_CHECK));
-		mci_writeb(host, MSHC_CTRL_R_KENT, mci_readb(host, MSHC_CTRL_R_KENT) | BIT(2));
-	}
+	mci_writew(host, HOST_CTRL2_R, SDMMC_HOST_VER4_ENABLE|SDMMC_SIGNALING_EN);
 	mci_writew(host, NORMAL_INT_STAT_EN_R, 0xffff);
 	mci_writew(host, ERROR_INT_STAT_EN_R, SDMMC_ALL_ERR_STAT_EN);
 	/*Card detect will be enabled in the last*/
 	mci_writew(host, NORMAL_INT_SIGNAL_EN_R, (~(BIT(6)|BIT(7) | BIT(8)) & 0xffff) );
 	mci_writew(host, ERROR_INT_SIGNAL_EN_R, SDMMC_ALL_ERR_SIGNAL_EN);
+	mci_writeb(host, CTRL_R, SDMMC_RST_N_OE|SDMMC_RST_N|SDMMC_CARD_IS_EMMC);
 	mci_writeb(host, HOST_CTRL1_R,
 		(mci_readb(host, HOST_CTRL1_R)&0xe7) | (SDMMC_ADMA2_32 << SDMMC_DMA_SEL));
+	mci_writeb(host, MSHC_CTRL_R, mci_readb(host, MSHC_CTRL_R) & (~SDMMC_CMD_CONFLICT_CHECK));
 	mci_writew(host, CLK_CTRL_R,
 		mci_readw(host, CLK_CTRL_R)|SDMMC_INTERNAL_CLK_EN);
 }
@@ -556,8 +467,6 @@ static int dw_mci_init_slot_caps(struct dw_mci_slot *slot)
 
 static int dw_mci_get_ro(struct mmc_host *mmc)
 {
-	struct dw_mci_slot *slot = mmc_priv(mmc);
-        struct dw_mci *host = slot->host;
 	int read_only = -1;
 #if 0
 	struct dw_mci_slot *slot = mmc_priv(mmc);
@@ -569,7 +478,7 @@ static int dw_mci_get_ro(struct mmc_host *mmc)
 		read_only = gpio_ro;
 	else {
 		/*Need to read the IP register to judge if ro*/
-		dev_info(host->dev, "IP get_ro feature is not implemented currently.\n");
+		pr_err("IP get_ro feature is not implemented currently.\n");
 	}
 	dev_dbg(&mmc->class_dev, "card is %s\n",
 		read_only ? "read-only" : "read-write");
@@ -606,7 +515,7 @@ static int dw_mci_get_cd(struct mmc_host *mmc)
 		present = gpio_cd;
 	else {
 		/*SD card card detect using IP regs is todo*/
-		dev_info(host->dev, "SD card card detect using IP regs is ToDo.\n");
+		pr_err("SD card card detect using IP regs is ToDo.\n");
 	}
 
 	spin_lock_bh(&host->lock);
@@ -714,7 +623,7 @@ static int dw_mci_init_slot(struct dw_mci *host)
 	if (!mmc->ocr_avail)
 		mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 
-	dev_info(host->dev, "regulator support volage ocr_avail=0x%x\n",
+	pr_err("%s: regulator support volage ocr_avail=0x%x\n", __func__,
 			mmc->ocr_avail);
 
 	ret = mmc_of_parse(mmc);
@@ -733,7 +642,7 @@ static int dw_mci_init_slot(struct dw_mci *host)
 		mmc->max_req_size = mmc->max_seg_size * mmc->max_segs;
 		mmc->max_blk_count = mmc->max_req_size / 512;
 	} else {
-		dev_err(host->dev, "dw-mmc-cqe pio mode is ToDo.\n");
+		pr_err("dw-mmc-cqe pio mode is ToDo.\n");
 		/* To DO, TRANS_MODE_PIO */
 	}
 
@@ -828,73 +737,6 @@ static u32 dw_mci_prepare_command(struct mmc_host *mmc, struct mmc_command *cmd)
 	return cmdr;
 }
 
-static void dw_mci_prepare_desc64(struct dw_mci *host,
-				 struct mmc_data *data,
-				 struct scatterlist *sg)
-{
-	u32  blk_cnt, cur_blk_cnt, remain_blk_cnt;
-	u32  tmp_val;
-	u32* desc_base = host->desc_vaddr ;
-	u32  dma_len = 0;
-	u64  dma_addr;
-	u32  i;
-	unsigned int begin, end;
-
-	for(i=0; i<host->dma_nents; i++, sg++) {
-		dma_len = sg_dma_len(sg);
-
-		/*blk_cnt must be the multiple of 512(0x200)*/
-		if (dma_len < 512)
-			blk_cnt = 1;
-		else
-			blk_cnt  = dma_len >> 9;
-
-		remain_blk_cnt  = blk_cnt;
-		dma_addr = sg_dma_address(sg);
-
-		while (remain_blk_cnt) {
-		/*DW_MCI_MAX_SCRIPT_BLK is tha max for each descriptor record*/
-			if (remain_blk_cnt > DW_MCI_MAX_SCRIPT_BLK)
-				cur_blk_cnt = DW_MCI_MAX_SCRIPT_BLK;
-			else
-				cur_blk_cnt = remain_blk_cnt;
-
-			/* In Synopsys DesignWare Databook Page 84,
-			 * They mentioned the DMA 128MB restriction
-			 */
-			begin = dma_addr / 0x8000000;
-			end = (dma_addr + cur_blk_cnt * 512) / 0x8000000;
-
-			/*If begin and end in the different 128MB memory zone*/
-			if (begin != end)
-				cur_blk_cnt = (end * 0x8000000 - dma_addr) / 512;
-
-			if (dma_len < 512)
-				tmp_val = ((dma_len) << 16) | BIT(0) | BIT(5);
-			else
-				tmp_val = ((cur_blk_cnt & 0x7f) << 25) | BIT(0) | BIT(5);
-
-			/*Last descriptor*/
-			if (i == host->dma_nents - 1 && remain_blk_cnt == cur_blk_cnt)
-				tmp_val |= BIT(1);
-
-			desc_base[0] = tmp_val;
-			desc_base[1] = dma_addr & 0xffffffff;
-			desc_base[3] = 0x0;	//reserved
-			desc_base[2] = dma_addr >> 32; //upper address
-
-			pr_debug("des0 = 0x%x\n", desc_base[0]);
-			pr_debug("des1 = 0x%x\n", desc_base[1]);
-			pr_debug("des2 = 0x%x\n", desc_base[2]);   //reserved
-			pr_debug("des3 = 0x%x\n", desc_base[3]);   //upper
-
-			dma_addr = dma_addr + (cur_blk_cnt << 9);
-			remain_blk_cnt -= cur_blk_cnt;
-			desc_base += 4;
-		}
-	}
-}
-
 static void dw_mci_prepare_desc32(struct dw_mci *host,
 				 struct mmc_data *data,
 				 struct scatterlist *sg)
@@ -971,7 +813,7 @@ static void dw_mci_submit_data(struct dw_mci *host, struct mmc_data *data)
 	host->sg = data->sg;
 
 	if (host->dma_64bit_address == 1)
-		dw_mci_prepare_desc64(host, host->data, host->sg);
+		pr_err("Currently, the 64bit DMA mode is not implemented yet.\n");
 	else
 		dw_mci_prepare_desc32(host, host->data, host->sg);
 }
@@ -1004,7 +846,7 @@ void wait_done(struct dw_mci *host, volatile u32 *addr,
 			break;
 
 		if(n++ > 3000000) {
-			dev_err(host->dev,"opcode=%d, addr=%px, *addr=0x%x, mask=0x%x, value=0x%x\n",
+			pr_err("%s: opcode=%d, addr=%px, *addr=0x%x, mask=0x%x, value=0x%x\n", __func__,
 				host->opcode, addr, readl(addr), mask, value);
 			break;
 		}
@@ -1016,13 +858,13 @@ EXPORT_SYMBOL(wait_done);
 static void dw_mci_regs_show(struct dw_mci *host,
 			    struct mmc_command *cmd, u32 cmd_flags)
 {
-	dev_err(host->dev, "opcode = %d, arg = 0x%x, cmdflags = 0x%x\n",
+	pr_err("opcode = %d, arg = 0x%x, cmdflags = 0x%x\n",
 		cmd->opcode, cmd->arg, cmd_flags);
-	dev_err(host->dev, "status_interrupt = 0x%x, error_interrupt = 0x%x, auto_error_interrupt = 0x%x\n",
+	pr_err("status_interrupt = 0x%x, error_interrupt = 0x%x, auto_error_interrupt = 0x%x\n",
 		host->normal_interrupt, host->error_interrupt, host->auto_error_interrupt);
-	dev_err(host->dev, "pstate = 0x%x\n", mci_readl(host, PSTATE_REG));
-	dev_err(host->dev, "host_ctrl_1 = 0x%x\n", mci_readb(host, HOST_CTRL1_R));
-	dev_err(host->dev, "xfer_mode = 0x%x\n", mci_readw(host, XFER_MODE_R));
+	pr_err("0x24 = 0x%x\n", mci_readl(host, PSTATE_REG));
+	pr_err("0x28 = 0x%x\n", mci_readb(host, HOST_CTRL1_R));
+	pr_err("0x0c = 0x%x\n", mci_readw(host, XFER_MODE_R));
 }
 
 static int dw_mci_start_command(struct dw_mci *host,
@@ -1035,7 +877,7 @@ static int dw_mci_start_command(struct dw_mci *host,
 
 	host->cmd = cmd;
 
-	dev_dbg(host->dev, "opcode = %d, arg = 0x%x\n", cmd->opcode, cmd->arg);
+	pr_debug("opcode = %d, arg = 0x%x\n", cmd->opcode, cmd->arg);
 	switch(cmd->opcode) {
 		case MMC_READ_SINGLE_BLOCK:
 		case MMC_READ_MULTIPLE_BLOCK:
@@ -1303,7 +1145,7 @@ static void dw_mci_err_handle(struct dw_mci *host,
 					rty_cnt++;
 					if(rty_cnt > 100) {
 						if(err==-DW_MCI_NOT_READY)
-							dev_err(host->dev, "status check failed, err = %d, status = 0x%x\n",
+							pr_err("%s: status check failed, err = %d, status = 0x%x\n", __func__,
 								err, status);
 						break;
 					}
@@ -1320,7 +1162,7 @@ static void dw_mci_err_handle(struct dw_mci *host,
 			pstat_rty++;
 			if(pstat_rty > 5000)
 			{
-				dev_err(host->dev, "wait pstate register data line ready timeout...\n");
+				pr_err("%s: wait pstate register data line ready timeout...\n", __func__);
 				break;
 			}
 		}while((mci_readl(host, PSTATE_REG) & 0xf00000) != 0xf00000 ||
@@ -1343,8 +1185,6 @@ static void __dw_mci_start_request(struct dw_mci *host,
 		mci_writew(host, BLOCKCOUNT_R, data->blocks);
 		mci_writel(host, BLOCKSIZE_R, data->blksz);
 		mci_writel(host, ADMA_SA_LOW_R, host->desc_paddr);
-		if (host->dma_64bit_address)
-			mci_writel(host, ADMA_SA_HIGH_R, 0x00000000);   // ADMA system address register - High 32bit
 		dataflags = dw_mci_prepare_data_flags(cmd);
 
 		mci_writew(host, XFER_MODE_R, dataflags);
@@ -1370,7 +1210,7 @@ static void __dw_mci_start_request(struct dw_mci *host,
 		}
 		else {
 			/*Using PIO mode*/
-			dev_info(host->dev, "pio mode is not supported currently\n");
+			pr_err("pio mode is not supported currently\n");
 		}
 	}
 
@@ -1390,7 +1230,7 @@ static void __dw_mci_start_request(struct dw_mci *host,
 			dw_mci_endup_data(host, data);
 		else {
 			/*Using PIO mode*/
-			dev_info(host->dev, "pio mode is not supported currently\n");
+			pr_err("pio mode is not supported currently\n");
 		}
 	}
 
@@ -1446,7 +1286,7 @@ static int dw_mci_switch(struct mmc_host *mmc,
 	err = dw_mci_start_command(host, &cmd, cmdr);
 
 	if (err) {
-		dev_err(host->dev, "interrupt status reg : 0x%x, interrupt error reg : 0x%x\n",
+		pr_err("%s interrupt status reg : 0x%x, interrupt error reg : 0x%x\n", __func__,
 			host->normal_interrupt, host->error_interrupt);
 	}
 
@@ -1457,13 +1297,11 @@ static int dw_mci_cqe_switch(struct mmc_host *mmc, bool enable)
 {
 	int ret = 0;
 	struct mmc_card* card = mmc->card;
-	struct dw_mci_slot *slot = mmc_priv(mmc);
-        struct dw_mci *host = slot->host;
 	u8 val = enable ? EXT_CSD_CMDQ_MODE_ENABLED : 0;
 
 	if (!card->ext_csd.cmdq_support)
 	{
-		dev_warn(host->dev, "The device card does not support cqe mode\n");
+		pr_err("The device card does not support cqe mode\n");
 		return 0;
 	}
 
@@ -1471,7 +1309,7 @@ static int dw_mci_cqe_switch(struct mmc_host *mmc, bool enable)
 			    EXT_CSD_CMDQ_MODE_EN, val,
 			    card->ext_csd.generic_cmd6_time);
 	if (ret) {
-		dev_err(host->dev, "cmdq mode %sable failed %d\n",
+		pr_err("%s: cmdq mode %sable failed %d\n", __func__,
 			enable ? "en" : "dis", ret);
 		goto out;
 	}
@@ -1507,7 +1345,7 @@ static void dw_mci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	/*cmdq case needs extra check*/
 	if (host->pdata && (host->pdata->caps2 & MMC_CAP2_CQE)) {
 		if ((host->cqe) == NULL){
-			dev_err(host->dev, "dw_mci_request_cqe not done yet\n");
+			pr_err("dw_mci_request_cqe not done yet\n");
 			up_write(&host->cr_rw_sem);
 			return;
 		}
@@ -1535,7 +1373,7 @@ static void dw_mci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 			else
 				host->cqe_reenable=1;
 			if (ret)
-				dev_err(host->dev, "disable cmdq failed !\n");
+				pr_err("%s: disable cmdq failed !\n", __func__);
 
 			dw_mci_wait_status(host, &status);
 		}
@@ -1560,7 +1398,7 @@ static void dw_mci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	if ((mrq->cmd->opcode == MMC_MANUFACTURER_CMD62 ||
 	   mrq->cmd->opcode == MMC_MANUFACTURER_CMD63) &&
 	   mmc->card && mmc->card->cid.manfid != 0x45)
-		dev_warn(host->dev, "skip manufacturer specific eMMC command 62 or 63...\n");
+		pr_err("%s: skip manufacturer specific eMMC command 62 or 63...\n", __func__);
 	else
 		dw_mci_start_request(host, slot);
 
@@ -1573,7 +1411,7 @@ static void dw_mci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 			ret = dw_mci_cqe_switch(mmc, true);
 			host->cqe_reenable = 0;
 			if (ret)
-				dev_err(host->dev,"switch cmdq failed !\n");
+				pr_err("%s: switch cmdq failed !\n", __func__);
 			dw_mci_wait_status(host, &status);
 		}
 	}
@@ -1611,19 +1449,14 @@ static void dw_mci_cqhci_init(struct dw_mci *host)
 		if(PTR_ERR(host->cqe) == -EINVAL ||
 		   PTR_ERR(host->cqe) == -ENOMEM ||
 		   PTR_ERR(host->cqe)==-EBUSY) {
-			dev_err(host->dev, "Unable to get the cmdq related attribute, err=%ld\n",
+			pr_err("Unable to get the cmdq related attribute, err=%ld\n",
 				PTR_ERR(host->cqe));
 			host->cqe = 0;
 			host->pdata->caps2 &= ~(MMC_CAP2_CQE|MMC_CAP2_CQE_DCMD);
 		}
 		else {
 			host->cqe->ops = &dw_mci_cqhci_host_ops;
-			if (!host->dma_64bit_address)
-				cqhci_init(host->cqe, host->slot->mmc, 0);
-			else {
-				cqhci_init(host->cqe, host->slot->mmc, 1);
-				host->cqe->caps |= CQHCI_TASK_DESC_SZ_128;
-			}
+			cqhci_init(host->cqe, host->slot->mmc, 0);
 		}
 	}
 }
@@ -1700,14 +1533,6 @@ int dw_mci_probe(struct dw_mci *host)
 	host->cqe_reenable=0;
 	host->cmd_atomic=false;
 
-	if (host->dma_64bit_address == 1) {
-		ret = dma_set_coherent_mask(host->dev, DMA_BIT_MASK(64));
-		if (ret) {
-			printk(KERN_ERR "64-bit DMA configuration failed\n");
-			goto err_dmaunmap;
-		}
-	}
-
 	/*Allocate the descriptor memory*/
 	host->desc_vaddr = dma_alloc_coherent(host->dev,
 					      DW_MCI_DESC_LEN,
@@ -1723,6 +1548,7 @@ int dw_mci_probe(struct dw_mci *host)
 	 * user can modify this setting by drv_data->init()
 	 */
 	host->use_dma = TRANS_MODE_DMA;
+	host->dma_64bit_address = 0;
 
 	/* This flag will be set 1 when doing tuning,
 	 * we add this flag because
@@ -1803,10 +1629,10 @@ int dw_mci_cqe_runtime_suspend(struct device *dev)
 
 	if (host->pdata && (host->pdata->caps2 & MMC_CAP2_CQE)) {
 		if(host->slot) {
-			dev_info(host->dev, "cqe suspend\n");
+			pr_err("[%s] cqe suspend\n", __func__);
 			ret = cqhci_suspend(host->slot->mmc);
 			if (ret) {
-				dev_err(host->dev, "cqe suspend failed\n");
+				pr_err("%s: cqe suspend failed\n", __func__);
 				return ret;
 			}
 		}
@@ -1826,27 +1652,21 @@ int dw_mci_cqe_runtime_resume(struct device *dev)
 
 	clk_prepare_enable(host->ciu_clk);
 
-	if (!soc_device_match(rtk_soc)) {
-		reset_control_assert(host->pdata->rstc);
-		usleep_range(10, 50);
-		reset_control_deassert(host->pdata->rstc);
-	}
-
 	dw_mci_setup(host);
 	if (drv_data && drv_data->init) {
 		ret = drv_data->init(host);
 		if (ret)
-			dev_err(host->dev, "implementation specific init failed\n");
+			pr_err("%s: implementation specific init failed\n", __func__);
 	}
 
 	init_completion(host->int_waiting);
 
 	if (host->pdata && (host->pdata->caps2 & MMC_CAP2_CQE)) {
 		if(host->slot) {
-			dev_info(host->dev, "cqe resume\n");
+			pr_err("[%s] cqe resume\n", __func__);
 			ret = cqhci_resume(host->slot->mmc);
 			if (ret)
-				dev_err(host->dev, "cqe resume failed\n");
+				pr_err("%s: cqe resume failed\n", __func__);
 		}
 	}
 
