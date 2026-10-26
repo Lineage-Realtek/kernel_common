@@ -13,51 +13,45 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/sys_soc.h>
 #include <linux/rfkill.h>
 #include <linux/gpio/consumer.h>
 #include <linux/pinctrl/consumer.h>
-#include <linux/ioport.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/of_irq.h>
-#include <linux/of_address.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 
-#define LSADC0_PAD0 0x900
-#define ISO_PFUNC21 0x74
-
-#define ISO_DBG_STATUS 0x190
-#define ISO_PFUNC0 0x2c
-#define ISO_PFUNC1 0x30
-#define ISO_PFUNC6 0x3c
-#define ISO_PFUNC7 0x40
+#define LSADC0_PAD0	0x900
+#define ADC_VAL0_MASK	GENMASK(7, 2)
+#define ADC_VAL0	0x94
 
 enum voltage_config {
-	DETECT = 0,
-	FIX_1V8,
-	FIX_3V3,
-	DETECT_NONE,
+	VOLT_DETECT = 0,
+	VOLT_FIX_1V8,
+	VOLT_FIX_3V3,
 };
 
-static struct rfkill *bt_rfk;
-static const char bt_name[] = "bluetooth";
-static struct gpio_desc *bt_reset;
-
+struct rfkill *bt_rfk;
+struct gpio_desc *bt_reset;
 struct pinctrl *pinctrl;
 struct pinctrl_state *pins_default;
 struct pinctrl_state *pins_1v8;
 struct pinctrl_state *pins_3v3;
 
+static const struct soc_device_attribute soc_voltage_detect[] = {
+	{ .family = "Realtek Stark", },
+	{ /* sentinel */ }
+};
+
 static int bluetooth_set_power(void *data, bool blocked)
 {
 	int err = 0;
 
-	pr_info("%s: block=%d\n", __func__, blocked);
+	pr_info("%s: %s\n", __func__, blocked ? "off" : "on");
 
 	if (!blocked)
 		err = gpiod_direction_output(bt_reset, 1);
@@ -76,12 +70,10 @@ static struct rfkill_ops rfkill_bluetooth_ops = {
 
 static int rfkill_gpio_init(struct device *dev)
 {
-	/*initial gpios*/
-	/* get gpio number from device tree*/
 	bt_reset = devm_gpiod_get(dev, "rfkill", GPIOD_OUT_LOW);
 	if (IS_ERR(bt_reset)) {
-		pr_err("[%s ] could not request gpio\n", __func__);
-		return -1;
+		pr_err("%s could not request gpio\n", __func__);
+		return PTR_ERR(bt_reset);
 	}
 
 	return 0;
@@ -92,104 +84,103 @@ static void rfkill_gpio_deinit(void)
 	gpiod_put(bt_reset);
 }
 
+static void rfkill_uart_voltage_detect(struct regmap *iso_base, int mode)
+{
+	u32 reg;
+
+	if (mode == VOLT_DETECT) {
+		regmap_read(iso_base, LSADC0_PAD0, &reg);
+
+		if ((reg & ADC_VAL0_MASK) >= ADC_VAL0)
+			mode = VOLT_FIX_3V3;
+		else
+			mode = VOLT_FIX_1V8;
+	}
+
+	switch(mode) {
+	case VOLT_FIX_3V3:
+		pinctrl_select_state(pinctrl, pins_3v3);
+		break;
+	case VOLT_FIX_1V8:
+		pinctrl_select_state(pinctrl, pins_1v8);
+		break;
+	}
+}
+
 static int rfkill_bluetooth_probe(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
-	bool default_state = true;
-	struct regmap *iso_dbg;
-	unsigned int val = 0x0;
-	const u32 *prop;
-        int size;
-	int rc = 0;
-	int mode = DETECT;
+	struct regmap *iso_base;
+	const u32 *value;
+	int mode = 0, ret = 0;
 
 	pr_info("-->%s\n", __func__);
 
-	rc = rfkill_gpio_init(dev);
-	if (rc) {
-		dev_err(dev, "rfkill_gpio_init fail\n");
+	ret = rfkill_gpio_init(dev);
+	if (ret)
 		goto deferred;
-	}
 
-	pinctrl = devm_pinctrl_get(dev);
-	if (IS_ERR(pinctrl)) {
-		dev_dbg(dev, "no pinctrl\n");
-		mode = DETECT_NONE;
-	} else {
-	        pins_default = pinctrl_lookup_state(pinctrl, PINCTRL_STATE_DEFAULT);
+	if (soc_device_match(soc_voltage_detect)) {
+		iso_base = syscon_regmap_lookup_by_phandle(node, "realtek,iso");
+		if (IS_ERR(iso_base)) {
+			dev_warn(dev, "could not get iso register base address\n");
+			return PTR_ERR(iso_base);
+		}
+
+		pinctrl = devm_pinctrl_get(dev);
+		if (IS_ERR(pinctrl))
+			dev_warn(dev, "no pinctrl\n");
+
+		pins_default = pinctrl_lookup_state(pinctrl, PINCTRL_STATE_DEFAULT);
 		if (IS_ERR(pins_default)) {
 			dev_warn(dev, "could not get default state\n");
 			pins_default = NULL;
 		}
 
 		pins_3v3 = pinctrl_lookup_state(pinctrl, "voltage-3v3");
-	        if (IS_ERR(pins_3v3)) {
+		if (IS_ERR(pins_3v3)) {
 			dev_warn(dev, "could not get state voltage-3v3\n");
 			pins_3v3 = NULL;
 		}
 
-	        pins_1v8 = pinctrl_lookup_state(pinctrl, "voltage-1v8");
+		pins_1v8 = pinctrl_lookup_state(pinctrl, "voltage-1v8");
 		if (IS_ERR(pins_1v8)) {
 			dev_warn(dev, "could not get state voltage-1v8\n");
 			pins_1v8 = NULL;
 		}
+
+		value = of_get_property(dev->of_node, "voltage-config", NULL);
+		if (value)
+			mode = of_read_number(value, 1);
+
+		rfkill_uart_voltage_detect(iso_base, mode);
 	}
 
-	prop = of_get_property(dev->of_node, "voltage-config", &size);
-        if (prop)
-                mode = of_read_number(prop, 1);
-
-	if (mode == DETECT) {
-		iso_dbg = syscon_regmap_lookup_by_phandle(
-					node, "realtek,pinctrl");
-
-		val = BIT(6);
-		regmap_update_bits_base(iso_dbg, ISO_DBG_STATUS, val, val,
-					NULL, false, true);
-		mdelay(100);
-		regmap_read(iso_dbg, ISO_DBG_STATUS, &val);
-
-		if(val & BIT(3)) {	/* 3.3v */
-			if (pins_3v3)
-				pinctrl_select_state(pinctrl, pins_3v3);
-		} else {			/* 1.8v */
-			if (pins_1v8)
-				pinctrl_select_state(pinctrl, pins_1v8);
-		}
-	}
-	else if (mode == FIX_1V8) {
-		if (pins_1v8)
-			pinctrl_select_state(pinctrl, pins_1v8);
-	}
-	else if (mode == FIX_3V3) {
-		if (pins_3v3)
-			pinctrl_select_state(pinctrl, pins_3v3);
-	}
-
-	bt_rfk = rfkill_alloc(bt_name, &pdev->dev, RFKILL_TYPE_BLUETOOTH,
-				&rfkill_bluetooth_ops, NULL);
+	bt_rfk = rfkill_alloc("rtk-bt", &pdev->dev, RFKILL_TYPE_BLUETOOTH,
+			      &rfkill_bluetooth_ops, NULL);
 	if (!bt_rfk) {
-		rc = -ENOMEM;
+		ret = -ENOMEM;
 		goto err_rfkill_alloc;
 	}
 
 	/* userspace cannot take exclusive control */
 	rfkill_init_sw_state(bt_rfk, false);
-	rc = rfkill_register(bt_rfk);
-	if (rc)
+
+	ret = rfkill_register(bt_rfk);
+	if (ret)
 		goto err_rfkill_reg;
 
 	rfkill_set_sw_state(bt_rfk, true);
-	bluetooth_set_power(NULL, default_state);
 
 	pr_info("<--%s\n", __func__);
+
 	return 0;
 
 err_rfkill_reg:
 	rfkill_destroy(bt_rfk);
 err_rfkill_alloc:
-	return rc;
+	return ret;
 deferred:
 	return -EPROBE_DEFER;
 }
@@ -197,9 +188,11 @@ deferred:
 static int rfkill_bluetooth_remove(struct platform_device *dev)
 {
 	pr_info("-->%s\n", __func__);
+
 	rfkill_gpio_deinit();
 	rfkill_unregister(bt_rfk);
 	rfkill_destroy(bt_rfk);
+
 	pr_info("<--%s\n", __func__);
 
 	return 0;
@@ -234,7 +227,7 @@ static void __exit rfkill_bluetooth_exit(void)
 
 late_initcall(rfkill_bluetooth_init);
 module_exit(rfkill_bluetooth_exit);
+
 MODULE_DESCRIPTION("bluetooth rfkill");
 MODULE_AUTHOR("rs <wn@realsil.com.cn>");
 MODULE_LICENSE("GPL");
-
