@@ -72,11 +72,11 @@ static const struct regmap_config apw8886_regmap_config = {
 	.precious_reg     = apw8886_regmap_precious_reg,
 };
 
-static inline unsigned long apw8886_i2c_get_driver_data(struct i2c_client *client)
+static inline unsigned long apw8886_i2c_get_driver_data(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	if (IS_ENABLED(CONFIG_OF) && client->dev.of_node)
 		return (unsigned long)of_device_get_match_data(&client->dev);
-	return (uintptr_t)i2c_get_match_data(client);
+	return id->driver_data;
 }
 
 static int apw8886_chip_id_valid(u32 chip_id)
@@ -91,13 +91,14 @@ static struct mfd_cell apw8886_devs[] = {
 	},
 };
 
-static int apw8886_i2c_probe(struct i2c_client *client)
+static int apw8886_i2c_probe(struct i2c_client *client,
+			     const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct apw888x_device *adev;
 	int ret;
 	u32 chip_id, rev;
-	unsigned long pmic_id = apw8886_i2c_get_driver_data(client);
+	unsigned long pmic_id = apw8886_i2c_get_driver_data(client, id);
 
 	adev = devm_kzalloc(dev, sizeof(*adev), GFP_KERNEL);
 	if (!adev)
@@ -136,9 +137,9 @@ static int apw8886_i2c_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void apw8886_i2c_remove(struct i2c_client *client)
+static int apw8886_i2c_remove(struct i2c_client *client)
 {
-	return;
+	return 0;
 }
 
 static void apw8886_i2c_shutdown(struct i2c_client *client)
