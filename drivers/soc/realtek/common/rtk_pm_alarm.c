@@ -166,7 +166,7 @@ static int rtk_pm_alarm_probe(struct platform_device *pdev)
 		return PTR_ERR(res);
 
 	data->base = devm_ioremap_resource(&pdev->dev, res);
-	if (!data->base)
+	if (IS_ERR(data->base))
 		return -ENOMEM;
 
 	data->dev = dev;
