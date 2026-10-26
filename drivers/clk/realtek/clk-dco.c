@@ -68,8 +68,8 @@ struct dco_reg_desc {
 
 static const struct dco_reg_desc dco_reg_desc[] = {
 	{
-		.reg_dco_0 = 0x79c,
-		.reg_dco_1 = 0x0f4,
+		.reg_dco_0 = 0x0f4,
+		.reg_dco_1 = 0x79c,
 		.dco_sel_in_dco_2 = 0,
 	},
 	{
