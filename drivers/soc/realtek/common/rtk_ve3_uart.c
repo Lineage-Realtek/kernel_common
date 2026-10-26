@@ -12,9 +12,6 @@
 #include <soc/realtek/rtk_ipc_shm.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
-#include <linux/remoteproc.h>
-#include <linux/mfd/syscon.h>
-#include <linux/regmap.h>
 
 struct class *ve3_log_class;
 int ve3_uart_enable = 0;
@@ -25,7 +22,7 @@ struct task_struct *ve3_uart_kthread;
 wait_queue_head_t ve3_uart_waitQueue;
 
 
-static struct regmap *hevc_reg;
+static void __iomem *hevc_reg;
 #define UFIFO_STATUS 0x18
 #define UFIFO_RD 0x14
 char uart_tx[1024];
@@ -37,7 +34,6 @@ static int ve3_uart_thread(void * p)
 	int status;
 	int cnt;
 	char tx_char;
-	u32 val;
 
 	while (1) {
 		if (wait_event_interruptible(ve3_uart_waitQueue, ve3_uart_enable || kthread_should_stop())) {
@@ -52,11 +48,10 @@ static int ve3_uart_thread(void * p)
 		memset(uart_tx, 0, 1024);
 		tx_num = 0;
 		while (ve3_uart_enable) {
-			regmap_read(hevc_reg, UFIFO_STATUS, &status);
+			status = readl(hevc_reg + UFIFO_STATUS);
 			cnt = (status >> 16) & 0x1f;
 			while (cnt > 0) {
-				regmap_read(hevc_reg, UFIFO_RD, &val);
-				tx_char = (char)(val & 0xFF);
+				tx_char = readl(hevc_reg + UFIFO_RD);
 				if (tx_char == '\n' || tx_num == 1023) {
 					uart_tx[tx_num] = tx_char;
 					pr_err("[VE3 LOG] %s \n", uart_tx);
@@ -75,16 +70,14 @@ static int ve3_uart_thread(void * p)
 }
 
 
-static ssize_t ve3_log_show(const struct class *class,
-			    const struct class_attribute *attr,
-			    char *buf)
+static ssize_t ve3_log_show(struct class *class,
+		struct class_attribute *attr, char *buf)
 {
 	return sprintf(buf, "%d\n", ve3_uart_enable);
 }
 
-ssize_t ve3_log_store(const struct class *class,
-		      const struct class_attribute *attr,
-		      const char *buf, size_t count)
+ssize_t ve3_log_store(struct class *class, struct class_attribute *attr,
+			const char *buf, size_t count)
 {
 	long val;
 	int ret = kstrtol(buf, 10, &val);
@@ -109,7 +102,6 @@ static int rtk_ve3_uart_probe(struct platform_device *pdev)
 	static struct clk *ve3_clk;
 	const u32 *prop;
 	int size = 0;
-	struct device_node *syscon_np;
 
 	ve3_clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(ve3_clk)) {
@@ -121,19 +113,13 @@ static int rtk_ve3_uart_probe(struct platform_device *pdev)
 		devm_clk_put(&pdev->dev, ve3_clk);
 		return 0;
 	}
-
-	syscon_np = of_parse_phandle(pdev->dev.of_node, "syscon", 0);
-	if (IS_ERR_OR_NULL(syscon_np)) {
-		return -ENODEV;
-	}
-
-	hevc_reg = syscon_node_to_regmap(syscon_np);
-	if (IS_ERR_OR_NULL(hevc_reg)) {
-		of_node_put(syscon_np);
+	hevc_reg = of_iomap(pdev->dev.of_node, 0);
+	if (!hevc_reg) {
+		pr_err("cannot get hevc reg\n");
 		return -EINVAL;
 	}
 
-	ve3_log_class = class_create("ve3_log");
+	ve3_log_class = class_create(THIS_MODULE, "ve3_log");
 	if (ve3_log_class == NULL)
 		pr_err("failed to create ve3_log attribute!\n");
 	ret = class_create_file(ve3_log_class, &class_attr_ve3_log);
