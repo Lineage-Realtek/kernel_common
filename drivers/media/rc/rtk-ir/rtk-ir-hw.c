@@ -23,9 +23,6 @@ static struct rtk_ir_hw_decoder *rtk_ir_hw_decoders = {
 #ifdef CONFIG_IR_RTK_HW_SKY
 	&rtk_ir_sky,
 #endif
-#ifdef CONFIG_IR_RTK_HW_RCMM
-	&rtk_ir_rcmm,
-#endif
 };
 
 static void rtk_ir_hw_init(struct rtk_ir *ir)
@@ -70,11 +67,6 @@ static void rtk_ir_hw_init(struct rtk_ir *ir)
 		writel(dec->timings.ft_min / dec->sr, base + IR_DPIR);
 		if (rc->rc_map.rc_proto == RC_PROTO_RC6_0)
 			writel(0x123, base + IR_CTRL_RC6);
-
-		if (rc->rc_map.rc_proto == RC_PROTO_RCMM12) {
-			writel(0x3B32261D, base + IRRCMM_APKB);
-			writel(0x8C624717, base + IRRCMM_TIMING);
-		}
 	}
 	val = readl(base + IR_CR) & RAW_MASK;
 	val |= dec->hw_set;
@@ -105,6 +97,127 @@ void rtk_ir_hw_resume(struct rtk_ir *ir)
 	writel((readl(base + IR_CR) | IRIE), base + IR_CR);
 }
 
+static int ir_map_cmp(const void *key, const void *elt)
+{
+	const u64 *scancode = key;
+	const struct rc_map_table *e = elt;
+
+	if (*scancode < e->scancode)
+		return -1;
+	else if (*scancode > e->scancode)
+		return 1;
+	return 0;
+}
+
+void *binary_search(const void *key, const void *base, size_t num,
+		    size_t size, cmp_func_t cmp)
+{
+	const char *pivot;
+	int result;
+
+	while (num > 0) {
+		pivot = base + (num >> 1) * size;
+		result = cmp(key, pivot);
+
+		if (result == 0)
+			return (void *)pivot;
+
+		if (result > 0) {
+			base = pivot + size;
+			num--;
+		}
+		num >>= 1;
+	}
+
+	return NULL;
+}
+
+static unsigned int ir_lookup_by_scancode(const struct rc_map *rc_map,
+					  u64 scancode)
+{
+	struct rc_map_table *res;
+
+	res = binary_search(&scancode, rc_map->scan, rc_map->len,
+			    sizeof(struct rc_map_table), ir_map_cmp);
+	if (!res)
+		return -1U;
+	else
+		return res - rc_map->scan;
+}
+
+static void rtk_ir_hw_report(struct rtk_ir *ir,
+			     struct rtk_ir_scancode_req *request,
+			     unsigned int data)
+{
+	struct rtk_ir_hw_decoder *dec = ir->hw.dec;
+	struct rc_dev *rc = ir->hw.rc;
+	struct rc_map *map = &rc->rc_map;
+	unsigned int index, keycode, i;
+	int code, value;
+
+	if (!dec->scancode(request, data))
+		return;
+
+	index = ir_lookup_by_scancode(map, request->scancode);
+	keycode = index < map->len ? map->scan[index].keycode : KEY_RESERVED;
+
+	if (keycode == BTN_LEFT) {
+		if (!request->repeat) {
+			ir->mouse_mode ^= 1;
+			dev_info(ir->dev, "mouse_mode = %d\n", ir->mouse_mode);
+			return;
+		}
+	}
+
+	if (ir->mouse_mode) {
+		mutex_lock(&ir->mouse_lock);
+		switch (keycode) {
+		case KEY_ENTER:
+			input_report_key(ir->mouse_dev, BTN_LEFT, 1);
+			input_sync(ir->mouse_dev);
+			input_report_key(ir->mouse_dev, BTN_LEFT, 0);
+			input_sync(ir->mouse_dev);
+			mutex_unlock(&ir->mouse_lock);
+			return;
+		case KEY_UP:
+			code = REL_Y;
+			value = -ir->mouse_distance;
+			break;
+		case KEY_DOWN:
+			code = REL_Y;
+			value = ir->mouse_distance;
+			break;
+		case KEY_LEFT:
+			code = REL_X;
+			value = -ir->mouse_distance;
+			break;
+		case KEY_RIGHT:
+			code = REL_X;
+			value = ir->mouse_distance;
+			break;
+		default:
+			mutex_unlock(&ir->mouse_lock);
+			goto keydown;
+		}
+
+		dev_info(ir->dev, "mouse_mode code: 0x%x, value: %d, distace: %d, speed: %d\n",
+			 code, value, ir->mouse_distance, ir->mouse_speed);
+		for (i = 0; i < ir->mouse_speed; i++) {
+			input_report_rel(ir->mouse_dev, code, value);
+			input_sync(ir->mouse_dev);
+		}
+		mutex_unlock(&ir->mouse_lock);
+		return;
+	}
+
+keydown:
+	if (request->repeat)
+		rc_repeat(rc);
+	else
+		rc_keydown(rc, request->protocol, request->scancode,
+			   request->toggle);
+}
+
 void rtk_ir_isr_hw(struct rtk_ir *ir)
 {
 	struct rtk_ir_hw_decoder *dec = ir->hw.dec;
@@ -120,33 +233,18 @@ void rtk_ir_isr_hw(struct rtk_ir *ir)
 		repeat = 1;
 
 	writel((IR_DVF | IR_REPEAT), base + IR_SR);
-	if (rc->rc_map.rc_proto == RC_PROTO_RCMM12)
-		data = readl(base + IRRXRCLFIFO); //for rcmm
 	data = readl(base + IR_RP);
 
 	dev_info(ir->dev, "scancode = 0x%x\n", data);
 
-	if (repeat) {
-		rc_repeat(ir->hw.rc);
-		return;
-	}
-
-	request.protocol = RC_PROTO_UNKNOWN;
+	request.protocol = rc->rc_map.rc_proto;
 	request.toggle = 0;
 	if (!dec->scancode)
 		return;
 
 	request.last_scancode = rc->last_scancode;
-	request.repeat = 0;
-	request.repeat_time = dec->repeat_time;
-	if(dec->scancode(&request, data)) {
-		if (request.repeat)
-			rc_repeat(ir->hw.rc);
-		else
-			rc_keydown(ir->hw.rc, request.protocol, request.scancode,
-				   request.toggle);
-		dec->last_raw = data;
-	}
+	request.repeat = repeat;
+	rtk_ir_hw_report(ir, &request, data);
 }
 
 int rtk_ir_hw_probe(struct rtk_ir *ir)

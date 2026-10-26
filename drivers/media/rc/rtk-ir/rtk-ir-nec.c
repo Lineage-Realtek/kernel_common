@@ -29,9 +29,13 @@ static int rtk_ir_nec_scancode(struct rtk_ir_scancode_req *request, unsigned int
 				data;
 		request->protocol = RC_PROTO_NECX;
 	} else {
-		request->scancode = addr << 8 |
-				data;
-		request->protocol = RC_PROTO_NEC;
+		if (request->protocol == RC_PROTO_NECX)
+			request->scancode = addr     << 16 |
+					addr_inv <<  8 |
+					data;
+		else
+			request->scancode = addr << 8 |
+					data;
 	}
 
 	return 1;
@@ -40,22 +44,21 @@ static int rtk_ir_nec_scancode(struct rtk_ir_scancode_req *request, unsigned int
 static int rtk_ir_nec_wakeinfo(struct rtk_ir_wakeinfo *info, unsigned int scancode)
 {
 	unsigned int mask;
-	enum rc_proto protocol;
+	enum rc_proto protocol = info->protocol;
 	unsigned int addr, addr_inv, data, data_inv;
 	unsigned int addr_m, addr_inv_m, data_m, data_inv_m;
 
-	if (scancode & 0xff000000) {
-		protocol = RC_PROTO_NEC32;
+	data = scancode & 0xff;
+
+	if (protocol == RC_PROTO_NEC32) {
 		mask = 0xffffffff;
-	} else if (scancode & 0x00ff0000) {
-		protocol = RC_PROTO_NECX;
+	} else if (protocol == RC_PROTO_NECX) {
+		pr_err("protocol is RC_PROTO_NECX\n");
 		mask = 0x00ffffff;
 	} else {
-		protocol = RC_PROTO_NEC;
 		mask = 0x0000ffff;
 	}
 
-	data = scancode & 0xff;
 	data_m = mask & 0xff;
 
 	if (protocol == RC_PROTO_NEC32) {
@@ -87,6 +90,7 @@ static int rtk_ir_nec_wakeinfo(struct rtk_ir_wakeinfo *info, unsigned int scanco
 	info->addr_msk = addr_inv_m <<  8 | addr_m;
 	info->scancode = data_inv << 8 | data;
 	info->scancode_msk = data_inv_m << 24 | data_m << 16;
+	pr_err("addr = 0x%x, scancode = 0x%x\n", info->addr, info->scancode);
 	return 0;
 }
 

@@ -24,9 +24,6 @@ static struct rtk_ir_hw_decoder *rtk_ir_hw1_decoders = {
 #ifdef CONFIG_IR_RTK_HW1_SKY
 	&rtk_ir_sky,
 #endif
-#ifdef CONFIG_IR_RTK_HW1_RCMM
-	&rtk_ir_rcmm,
-#endif
 };
 
 static void rtk_ir_hw1_init(struct rtk_ir *ir)
@@ -71,11 +68,6 @@ static void rtk_ir_hw1_init(struct rtk_ir *ir)
 		writel(dec->timings.ft_min / dec->sr, base + IR_DPIR);
 		if (rc->rc_map.rc_proto == RC_PROTO_RC6_0)
 			writel(0x123, base + IR_CTRL_RC6);
-
-		if (rc->rc_map.rc_proto == RC_PROTO_RCMM12) {
-			writel(0x3B32261D, base + IRRCMM_APKB_2);
-			writel(0x8C624717, base + IRRCMM_TIMING_2);
-		}
 	}
 	val = readl(base + IR_CR) & RAW_MASK;
 	val |= dec->hw_set;
@@ -121,9 +113,6 @@ void rtk_ir_isr_hw1(struct rtk_ir *ir)
 		repeat = 1;
 
 	writel((IR_DVF | IR_REPEAT), base + IR_SR);
-	if (rc->rc_map.rc_proto == RC_PROTO_RCMM12)
-		data = readl(base + IRRXRCLFIFO2); //for rcmm
-
 	data = readl(base + IR_RP);
 
 	dev_info(ir->dev, "scancode 0x%x\n", data);
@@ -133,7 +122,7 @@ void rtk_ir_isr_hw1(struct rtk_ir *ir)
 		return;
 	}
 
-	request.protocol = RC_PROTO_UNKNOWN;
+	request.protocol = rc->rc_map.rc_proto;
 	request.toggle = 0;
 	if (!dec->scancode)
 		return;

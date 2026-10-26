@@ -22,12 +22,12 @@ static int rtk_ir_xmp_scancode(struct rtk_ir_scancode_req *request, unsigned int
 		bits = (raw & (0xF<<(4*i)))>>(4*i);
 		if (i==4 && bits == 0xf)
 			return 0;
-		if (i==6) {
-			if (!(bits & 0x8))
+		if (i==5) {
+			if ((bits & 0x8))
 				repeat = 1;
-			continue;
 		}
-		temp = temp + bits;
+		if (i != 6)
+			temp = temp + bits;
 	}
 	temp = (~temp+1) & 0xF;
 	if(temp != (raw & 0xF<<24)>>24)
@@ -68,7 +68,7 @@ static int rtk_ir_proc_show(struct seq_file *m, void *v)
 
 static int rtk_ir_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, rtk_ir_proc_show,  pde_data(inode));
+	return single_open(file, rtk_ir_proc_show, PDE_DATA(inode));
 
 	return 0;
 }

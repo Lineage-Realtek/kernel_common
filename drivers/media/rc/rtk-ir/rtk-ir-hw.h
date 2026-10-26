@@ -30,6 +30,7 @@ struct rtk_ir_scancode_req {
 };
 
 struct rtk_ir_wakeinfo {
+	enum rc_proto protocol;
 	unsigned int addr;
 	unsigned int addr_msk;
 	unsigned int scancode;
@@ -63,7 +64,6 @@ extern struct rtk_ir_hw_decoder rtk_ir_nec;
 extern struct rtk_ir_hw_decoder rtk_ir_rstep;
 extern struct rtk_ir_hw_decoder rtk_ir_xmp;
 extern struct rtk_ir_hw_decoder rtk_ir_sky;
-extern struct rtk_ir_hw_decoder rtk_ir_rcmm;
 
 #ifdef CONFIG_IR_RTK_HW
 void rtk_ir_hw_suspend(struct rtk_ir *ir);

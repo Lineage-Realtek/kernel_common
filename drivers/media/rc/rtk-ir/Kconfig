@@ -34,9 +34,6 @@ config IR_RTK_HW_XMP
 config IR_RTK_HW_SKY
 	bool "SKY protocol"
 
-config IR_RTK_HW_RCMM
-	bool "RCMM protocol"
-
 endchoice
 
 config IR_RTK_HW1
@@ -63,9 +60,6 @@ config IR_RTK_HW1_XMP
 
 config IR_RTK_HW1_SKY
 	bool "SKY protocol"
-
-config IR_RTK_HW1_RCMM
-	bool "RCMM protocol"
 
 endchoice
 

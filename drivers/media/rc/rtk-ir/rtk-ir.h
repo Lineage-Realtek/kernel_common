@@ -47,9 +47,6 @@
 #define IRDIRECTV_TIMING2	(0x74)
 #define IRCOMCAST_TIMING	(0x78)
 #define IR_RAW_SF		(0xC8)
-#define IRRCMM_TIMING_2		(0x2C)
-#define IRRCMM_APKB_2		(0x34)
-#define IRRXRCLFIFO2		(0x38)
 
 /* define for register IR_CR */
 #define IRDN_MSK		0x1F
@@ -94,16 +91,19 @@ struct rtk_ir {
 	struct pm_dev_param pm_param;
 	struct notifier_block pm_notifier;
 
-	union {
-		struct ipc_shm_irda_v1 pcpu_data_v1;
-		struct ipc_shm_irda_v2 pcpu_data_v2;
-	};
+	struct ipc_shm_irda pcpu_data;
 
 	void __iomem *base;
 	struct regmap *iso;
 	struct clk *clk;
 	struct reset_control *rsts;
 	int irq;
+
+	struct input_dev *mouse_dev;
+	struct mutex mouse_lock;
+	int mouse_mode;
+	int mouse_distance;
+	int mouse_speed;
 };
 
 #endif /* _RTK_IR_H_ */

@@ -17,6 +17,9 @@
 
 #define RTK_IR_DEV "rtk-ir"
 
+#define MOUSE_DEFAULT_DISTANCE	2
+#define MOUSE_DEFAULT_SPEED	6
+
 static const struct of_device_id rtk_ir_match[] = {
 	{ .compatible = "realtek,rtk-ir" },
 	{},
@@ -72,7 +75,7 @@ static int rtk_ir_key_event(struct notifier_block *notifier,
 	struct rc_map *map = &rc->rc_map;
 	struct pm_dev_param *node;
 	bool sendKeyEvent = false;
-	unsigned int wakeup_event, i = 0, j = 0, k = 0, val, nf_code;
+	unsigned int wakeup_event, i = 0, j = 0, val, nf_code;
 
 	if (pm_event == PM_SUSPEND_PREPARE)
 		return 0;
@@ -86,10 +89,13 @@ static int rtk_ir_key_event(struct notifier_block *notifier,
 		return NOTIFY_DONE;
 	}
 
+	if (node->dev_pm_triggered == 0x0)
+		return NOTIFY_DONE;
+
 	/* after resume */
 	switch (wakeup_event) {
 	case ALARM_EVENT:
-		sendKeyEvent = true;
+		sendKeyEvent = false;
 		break;
 	case TIMER_EVENT:
 		sendKeyEvent = false;
@@ -101,11 +107,12 @@ static int rtk_ir_key_event(struct notifier_block *notifier,
 
 	if (sendKeyEvent) {
 		struct rtk_ir_hw_decoder *dec = ir->hw.dec;
-		struct rtk_ir_scancode_req request;
+		struct rtk_ir_scancode_req request = {0};
 
 		regmap_read(ir->iso, 0x65c, &val);
 		regmap_read(ir->iso, 0x650, &nf_code);
 		dev_info(dev, "Wakeup entire android src %d, 0x%x, %d\n", wakeup_event, val, nf_code);
+		request.protocol = map->rc_proto;
 		dec->scancode(&request, val);
 
 		if (wakeup_event == IR_EVENT) {
@@ -117,13 +124,6 @@ static int rtk_ir_key_event(struct notifier_block *notifier,
 			for (j = 0; j < map->len; j++)
 				if (KEY_PROG1 == (map->scan + j)->keycode){
 					request.scancode = (map->scan + j)->scancode;
-					break;
-				}
-		} else if (wakeup_event == ALARM_EVENT) {
-			// KEY_E: Global key for wifi connected
-			for (k = 0; k < map->len; k++)
-				if (KEY_E == (map->scan + k)->keycode){
-					request.scancode = (map->scan + k)->scancode;
 					break;
 				}
 		} else {
@@ -140,9 +140,6 @@ static int rtk_ir_key_event(struct notifier_block *notifier,
 		} else if (wakeup_event == GPIO_EVENT) {
 			pr_err("[GPIO_RESUME][%s] Scan code: 0x%x\n", __func__, request.scancode);
 			rc_keydown(rc, map->rc_proto, request.scancode, 0);
-		} else if (wakeup_event == ALARM_EVENT) {
-			pr_err("[ALARM_RESUME][%s] Check Wi-Fi connection, scan code: 0x%x\n", __func__, request.scancode);
-			rc_keydown(rc, map->rc_proto, request.scancode, 0);
 		} else if (wakeup_event == CEC_EVENT) {
 			pr_err("[CEC_RESUME][%s] Scan code: 0x%x\n", __func__, request.scancode);
 			rc_keydown(rc, map->rc_proto, request.scancode, 0);
@@ -152,15 +149,17 @@ static int rtk_ir_key_event(struct notifier_block *notifier,
 		}
 	}
 
+	node->dev_pm_triggered = 0x0;
+
 	return NOTIFY_DONE;
 }
 
-static void rtk_ir_get_wakeinfo_v1(struct rtk_ir_hw *hw, struct ipc_shm_irda_v1 *data,
-				   unsigned int keycode, unsigned int *custcode)
+static void rtk_ir_get_wakeinfo(struct rtk_ir_hw *hw, struct ipc_shm_irda *data,
+				unsigned int keycode, unsigned int *custcode)
 {
 	struct rc_dev *rc = hw->rc;
 	struct rc_map *map = &rc->rc_map;
-	struct irda_wakeup_key_v1 *tbl;
+	struct irda_wake_up_key *tbl;
 	struct rtk_ir_wakeinfo info;
 	int i, j, idx;
 	int check_custcode = 0;
@@ -173,6 +172,7 @@ static void rtk_ir_get_wakeinfo_v1(struct rtk_ir_hw *hw, struct ipc_shm_irda_v1 
 		if (keycode != (map->scan + i)->keycode && keycode != 0xffffffff)
 			continue;
 
+		info.protocol = map->rc_proto;
 		if (keycode == 0xffffffff)
 			hw->dec->wakeinfo(&info, keycode);
 		else
@@ -211,78 +211,14 @@ static void rtk_ir_get_wakeinfo_v1(struct rtk_ir_hw *hw, struct ipc_shm_irda_v1 
 	return;
 }
 
-static void rtk_ir_get_wakeinfo_v2(struct rtk_ir_hw *hw, struct ipc_shm_irda_v2 *data,
-				   unsigned int keycode, unsigned int *custcode)
-{
-	struct rc_dev *rc = hw->rc;
-	struct rc_map *map = &rc->rc_map;
-	struct irda_wakeup_key_v2 *tbl;
-	struct rtk_ir_wakeinfo info;
-	int i, j, idx;
-	int check_custcode = 0;
-
-	for (j = 0; j < MAX_KEY_TBL; j++)
-		if (custcode[j] != 0)
-			check_custcode = 1;
-
-	for (i = 0; i < map->len; i++) {
-		if (keycode != (map->scan + i)->keycode && keycode != 0xffffffff)
-			continue;
-
-		if (keycode == 0xffffffff)
-			hw->dec->wakeinfo(&info, keycode);
-		else
-			hw->dec->wakeinfo(&info, (map->scan + i)->scancode);
-
-		if (check_custcode) {
-			for (j = 0; j < MAX_KEY_TBL; j++)
-				if (info.addr == custcode[j])
-					break;
-			if (j == MAX_KEY_TBL)
-				continue;
-		}
-
-		for (j = 0; j < MAX_KEY_TBL; j++) {
-			tbl = data->key_tbl + j;
-			idx = tbl->pkey_nr;
-			if (idx != 0 && info.addr != tbl->ckey)
-				continue;
-
-			if (idx == 0) {
-				tbl->ckey = info.addr;
-				tbl->ckey_start = __ffs(info.addr_msk);
-				tbl->ckey_end = __fls(info.addr_msk);
-			}
-			tbl->pkey_start = __ffs(info.scancode_msk);
-			tbl->pkey_end = __fls(info.scancode_msk);
-			tbl->pkeys[idx++] = info.scancode;
-			tbl->pkey_nr = idx;
-			tbl->valid = 1;
-
-			data->ckey_nr++;
-			pr_info("irda wake-tbl : [%d, %d] = 0x%x, 0x%x\n", j,
-				idx - 1, info.scancode, info.addr);
-
-			if (keycode == 0xffffffff)
-				return;
-			break;
-		}
-	}
-	return;
-}
-
 static void rtk_ir_set_wakeup(struct rtk_ir *ir)
 {
 	struct device *dev = ir->dev;
 	struct device_node *np = dev->of_node;
-	struct ipc_shm_irda_v1 *pcpu_data_v1 = &ir->pcpu_data_v1;
-	struct ipc_shm_irda_v2 *pcpu_data_v2 = &ir->pcpu_data_v2;
+	struct ipc_shm_irda *pcpu_data = &ir->pcpu_data;
 	unsigned int keycode[MAX_WAKEUP_CODE];
 	unsigned int custcode[MAX_KEY_TBL] = {0};
 	int i, num;
-
-	struct pm_dev_param *pm_node = rtk_pm_get_param(PM);
-	struct pm_private *dev_pm = dev_get_drvdata(pm_node->dev);
 
 	num = of_property_count_u32_elems(np, "wakeup-custcode");
 	if (num > 0) {
@@ -302,35 +238,87 @@ static void rtk_ir_set_wakeup(struct rtk_ir *ir)
 	}
 
 	if (ir->hw.rc) {
-		if (dev_pm->version == RTK_PCPU_VERSION_V2) {
-			for (i = 0; i < num; i++)
-				rtk_ir_get_wakeinfo_v2(&ir->hw, pcpu_data_v2, keycode[i], custcode);
-			ir->pm_param.data = pcpu_data_v2;
-		} else {
-			for (i = 0; i < num; i++)
-				rtk_ir_get_wakeinfo_v1(&ir->hw, pcpu_data_v1, keycode[i], custcode);
-			pcpu_data_v1->dev_count++;
-			ir->pm_param.data = pcpu_data_v1;
-		}
+		for (i = 0; i < num; i++)
+			rtk_ir_get_wakeinfo(&ir->hw, pcpu_data, keycode[i], custcode);
+		pcpu_data->dev_count++;
 	}
 
 	if (ir->hw1.rc) {
-		if (dev_pm->version == RTK_PCPU_VERSION_V2) {
-			for (i = 0; i < num; i++)
-				rtk_ir_get_wakeinfo_v2(&ir->hw1, pcpu_data_v2, keycode[i], custcode);
-			ir->pm_param.data = pcpu_data_v2;
-		} else {
-			for (i = 0; i < num; i++)
-				rtk_ir_get_wakeinfo_v1(&ir->hw1, pcpu_data_v1, keycode[i], custcode);
-			pcpu_data_v1->dev_count++;
-			ir->pm_param.data = pcpu_data_v1;
-		}
+		for (i = 0; i < num; i++)
+			rtk_ir_get_wakeinfo(&ir->hw1, pcpu_data, keycode[i], custcode);
+		pcpu_data->dev_count++;
 	}
 
 	ir->pm_param.dev = ir->dev;
 	ir->pm_param.dev_type = IRDA;
+	ir->pm_param.data = pcpu_data;
 
 	rtk_pm_add_list(&ir->pm_param);
+}
+
+static ssize_t show_mouse_speed(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct rtk_ir *ir = dev_get_drvdata(dev);
+	unsigned int ret;
+
+	mutex_lock(&ir->mouse_lock);
+	ret = sprintf(buf, "mouse speed: %d\n", ir->mouse_speed);
+	mutex_unlock(&ir->mouse_lock);
+
+	return ret;
+}
+
+static ssize_t store_mouse_speed(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct rtk_ir *ir = dev_get_drvdata(dev);
+	unsigned int ret;
+
+	mutex_lock(&ir->mouse_lock);
+	ret = kstrtouint(buf, 0, (unsigned int *)&ir->mouse_speed);
+	mutex_unlock(&ir->mouse_lock);
+
+	ret = ret ? -EINVAL : count;
+	return ret;
+}
+
+static ssize_t show_mouse_distance(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct rtk_ir *ir = dev_get_drvdata(dev);
+	unsigned int ret;
+
+	mutex_lock(&ir->mouse_lock);
+	ret = sprintf(buf, "mouse distance: %d\n", ir->mouse_distance);
+	mutex_unlock(&ir->mouse_lock);
+
+	return ret;
+}
+
+static ssize_t store_mouse_distance(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct rtk_ir *ir = dev_get_drvdata(dev);
+	unsigned int ret;
+
+	mutex_lock(&ir->mouse_lock);
+	ret = kstrtouint(buf, 0, (unsigned int *)&ir->mouse_distance);
+	mutex_unlock(&ir->mouse_lock);
+
+	ret = ret ? -EINVAL : count;
+	return ret;
+}
+
+DEVICE_ATTR(mouse_speed, 0664, show_mouse_speed, store_mouse_speed);
+DEVICE_ATTR(mouse_distance, 0664, show_mouse_distance, store_mouse_distance);
+
+static void register_ir_sysfs(struct device *dev)
+{
+	device_create_file(dev, &dev_attr_mouse_distance);
+	device_create_file(dev, &dev_attr_mouse_speed);
 }
 
 static int rtk_ir_probe(struct platform_device *pdev)
@@ -338,6 +326,7 @@ static int rtk_ir_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct resource *res;
 	struct rtk_ir *ir;
+	struct input_dev *mouse_dev;
 	int ret;
 	unsigned int wake_event;
 
@@ -418,8 +407,39 @@ static int rtk_ir_probe(struct platform_device *pdev)
 		}
 	}
 
+	mouse_dev = input_allocate_device();
+	if (!mouse_dev) {
+		dev_err(dev, "ir mouse input device alloc fail");
+		goto err_probe_fail;
+	}
+
+	ir->mouse_dev = mouse_dev;
+	input_set_drvdata(mouse_dev, ir);
+	mouse_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REL);
+	mouse_dev->keybit[BIT_WORD(BTN_MOUSE)] = BIT_MASK(BTN_LEFT) |
+		BIT_MASK(BTN_RIGHT) | BIT_MASK(BTN_SIDE) | BIT_MASK(BTN_EXTRA);
+	mouse_dev->relbit[0] = BIT_MASK(REL_X) | BIT_MASK(REL_Y);
+	mouse_dev->name = "rtk-ir-mouse";
+	mouse_dev->phys = "rtk-ir-mouse/mouse0";
+
+	ret = input_register_device(mouse_dev);
+	if (ret) {
+		dev_err(dev, "can't register mouse input\n");
+		input_free_device(mouse_dev);
+		goto err_probe_fail;
+	}
+	ir->mouse_dev = mouse_dev;
+
 	rtk_ir_set_wakeup(ir);
 	rtk_ir_wakeup_key_handle(ir);
+
+	mutex_init(&ir->mouse_lock);
+	ir->mouse_distance = MOUSE_DEFAULT_DISTANCE;
+	ir->mouse_speed = MOUSE_DEFAULT_SPEED;
+	dev_info(dev, "default mouse distace: %d, speed: %d\n",
+		 ir->mouse_distance, ir->mouse_speed);
+
+	register_ir_sysfs(dev);
 
 	return 0;
 
@@ -429,6 +449,8 @@ err_probe_fail:
 
 static int rtk_ir_remove(struct platform_device *pdev)
 {
+	device_remove_file(&pdev->dev, &dev_attr_mouse_distance);
+	device_remove_file(&pdev->dev, &dev_attr_mouse_speed);
 	return 0;
 }
 
