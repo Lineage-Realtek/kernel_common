@@ -352,9 +352,7 @@ static int acpu_self_destroy(pid_t pid)
 
 	/* Allocate memory */
 	mutex_lock(&urpc_mutex);
-#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	rheap_setup_dma_pools(urpc_dev, NULL, AUDIO_ION_FLAG, __func__);
-#endif
 	vaddr = dma_alloc_coherent(urpc_dev, PAGE_SIZE, &paddr, GFP_KERNEL);
 	mutex_unlock(&urpc_mutex);
 	if (!vaddr) {
@@ -403,9 +401,7 @@ static int vcpu_self_destroy(pid_t pid)
 	void *vaddr;
 
 	mutex_lock(&urpc_mutex);
-#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	rheap_setup_dma_pools(urpc_dev, NULL, AUDIO_ION_FLAG, __func__);
-#endif
 	vaddr = dma_alloc_coherent(urpc_dev, PAGE_SIZE, &paddr, GFP_KERNEL);
 	mutex_unlock(&urpc_mutex);
 	if (!vaddr) {
@@ -454,9 +450,7 @@ static int hifi_self_destroy(pid_t pid)
 
 	/* Allocate memory */
 	mutex_lock(&urpc_mutex);
-#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	rheap_setup_dma_pools(urpc_dev, NULL, AUDIO_ION_FLAG, __func__);
-#endif
 	vaddr = dma_alloc_coherent(urpc_dev, PAGE_SIZE, &paddr, GFP_KERNEL);
 	mutex_unlock(&urpc_mutex);
 	if (!vaddr) {
@@ -516,13 +510,13 @@ static int rtk_urpc_flush(struct file *filp, fl_owner_t id)
 		task = NULL;
 
 	if (task == NULL) {
-		if (rpc_stat->acpu == 1 && self_destroy_epts.acpu_ept_info)
+		if (rpc_stat->acpu == 1)
 			acpu_self_destroy(rpc_stat->tgid);
 
-		if (rpc_stat->vcpu == 1 && self_destroy_epts.vcpu_ept_info)
+		if (rpc_stat->vcpu == 1)
 			vcpu_self_destroy(rpc_stat->tgid);
 
-		if (rpc_stat->hifi == 1 && self_destroy_epts.hifi_ept_info)
+		if (rpc_stat->hifi == 1)
 			hifi_self_destroy(rpc_stat->tgid);
 	}
 
@@ -578,20 +572,6 @@ int self_destroy_ept_init(struct rtk_krpc_ept_info *krpc_ept_info, char *name)
 	return ret;
 }
 
-static struct rtk_krpc_ept_info *of_krpc_ept_info_get_by_name(struct device *dev, char *name)
-{
-	int index;
-	struct rtk_krpc_ept_info *info;
-
-	index = of_property_match_string(dev->of_node, "realtek,krpc-names", name);
-	if (index < 0) {
-		return ERR_PTR(-ENOENT);
-	}
-	info = of_krpc_ept_info_get(dev->of_node, index);
-
-	return info;
-}
-
 static int rtk_urpc_probe(struct platform_device *pdev)
 {
 	struct class *urpc_class = NULL;
@@ -600,38 +580,38 @@ static int rtk_urpc_probe(struct platform_device *pdev)
 	struct device *dev;
 	dev_t devno;
 
-	self_destroy_epts.acpu_ept_info = of_krpc_ept_info_get_by_name(&pdev->dev, "acpu");
+	self_destroy_epts.acpu_ept_info = of_krpc_ept_info_get(pdev->dev.of_node, 0);
 	if (IS_ERR(self_destroy_epts.acpu_ept_info)) {
 		ret = PTR_ERR(self_destroy_epts.acpu_ept_info);
 		if (ret == -EPROBE_DEFER) {
 			dev_dbg(&pdev->dev, "acpu krpc ept info not ready, retry\n");
 			goto put_krpc_info;
 		} else {
-			dev_info(&pdev->dev, "cannot get acpu krpc ept info(%d), skipping\n", ret);
+			dev_err(&pdev->dev, "failed to get acpu krpc ept info: %d\n", ret);
 			self_destroy_epts.acpu_ept_info = NULL;
 		}
 	}
 
-	self_destroy_epts.vcpu_ept_info = of_krpc_ept_info_get_by_name(&pdev->dev, "vcpu");
+	self_destroy_epts.vcpu_ept_info = of_krpc_ept_info_get(pdev->dev.of_node, 1);
 	if (IS_ERR(self_destroy_epts.vcpu_ept_info)) {
 		ret = PTR_ERR(self_destroy_epts.vcpu_ept_info);
 		if (ret == -EPROBE_DEFER) {
 			dev_dbg(&pdev->dev, "vcpu krpc ept info not ready, retry\n");
 			goto put_krpc_info;
 		} else {
-			dev_info(&pdev->dev, "cannot get vcpu krpc ept info(%d), skipping\n", ret);
+			dev_err(&pdev->dev, "failed to get vcpu krpc ept info: %d\n", ret);
 			self_destroy_epts.vcpu_ept_info = NULL;
 		}
 	}
 
-	self_destroy_epts.hifi_ept_info = of_krpc_ept_info_get_by_name(&pdev->dev, "hifi");
+	self_destroy_epts.hifi_ept_info = of_krpc_ept_info_get(pdev->dev.of_node, 2);
 	if (IS_ERR(self_destroy_epts.hifi_ept_info)) {
 		ret = PTR_ERR(self_destroy_epts.hifi_ept_info);
 		if (ret == -EPROBE_DEFER) {
 			dev_dbg(&pdev->dev, "hifi krpc ept info not ready, retry\n");
 			goto put_krpc_info;
 		} else {
-			dev_info(&pdev->dev, "cannot get hifi krpc ept info(%d), skipping\n", ret);
+			dev_err(&pdev->dev, "failed to get hifi krpc ept info: %d\n", ret);
 			self_destroy_epts.hifi_ept_info = NULL;
 		}
 	}
@@ -663,7 +643,7 @@ static int rtk_urpc_probe(struct platform_device *pdev)
 	if (ret)
 		goto free_cdev;
 
-	urpc_class = class_create("rtk_urpc");
+	urpc_class = class_create(THIS_MODULE, "rtk_urpc");
 	if (IS_ERR(urpc_class)) {
 		ret = PTR_ERR(urpc_class);
 		goto unregister_cdev;
@@ -679,10 +659,7 @@ static int rtk_urpc_probe(struct platform_device *pdev)
 	mutex_init(&proc_mutex);
 
 	urpc_dev = &pdev->dev;
-#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	set_dma_ops(urpc_dev, &rheap_dma_ops);
-#endif
-
 	dev_info(&pdev->dev, "probe\n");
 
 	return 0;
