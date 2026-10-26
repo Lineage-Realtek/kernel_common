@@ -180,77 +180,52 @@ static struct clk_regmap_mux clk_sc1 = {
 	.clkr.hw.init = CLK_HW_INIT_PARENTS("clk_sc1",  clk_sc_parents, &clk_regmap_mux_ops, 0),
 };
 
-static const char * const clkdet_outputs[] = { "analog", "clk_gen" };
 static struct clk_regmap_clkdet clk_det_pll_bus = {
 	.clkr.hw.init = CLK_HW_INIT_NO_PARENT("ref_pll_bus", &clk_regmap_clkdet_ops, CLK_GET_RATE_NOCACHE),
 	.type = CLK_DET_TYPE_CRT,
 	.ofs  = 0x424,
-	.output_sel = clkdet_outputs,
-	.n_output_sel = ARRAY_SIZE(clkdet_outputs),
-	.mask_output_sel = BIT(31),
 };
 
 static struct clk_regmap_clkdet clk_det_pll_dcsb = {
 	.clkr.hw.init = CLK_HW_INIT_NO_PARENT("ref_pll_dcsb", &clk_regmap_clkdet_ops, CLK_GET_RATE_NOCACHE),
 	.type = CLK_DET_TYPE_CRT,
 	.ofs  = 0x428,
-	.output_sel = clkdet_outputs,
-	.n_output_sel = ARRAY_SIZE(clkdet_outputs),
-	.mask_output_sel = BIT(31),
 };
 
 static struct clk_regmap_clkdet clk_det_pll_acpu = {
 	.clkr.hw.init = CLK_HW_INIT_NO_PARENT("ref_pll_acpu", &clk_regmap_clkdet_ops, CLK_GET_RATE_NOCACHE),
 	.type = CLK_DET_TYPE_CRT,
 	.ofs  = 0x42c,
-	.output_sel = clkdet_outputs,
-	.n_output_sel = ARRAY_SIZE(clkdet_outputs),
-	.mask_output_sel = BIT(31),
 };
 
 static struct clk_regmap_clkdet clk_det_pll_ddsa = {
 	.clkr.hw.init = CLK_HW_INIT_NO_PARENT("ref_pll_ddsa", &clk_regmap_clkdet_ops, CLK_GET_RATE_NOCACHE),
 	.type = CLK_DET_TYPE_CRT,
 	.ofs  = 0x430,
-	.output_sel = clkdet_outputs,
-	.n_output_sel = ARRAY_SIZE(clkdet_outputs),
-	.mask_output_sel = BIT(31),
 };
 
 static struct clk_regmap_clkdet clk_det_pll_gpu = {
 	.clkr.hw.init = CLK_HW_INIT_NO_PARENT("ref_pll_gpu", &clk_regmap_clkdet_ops, CLK_GET_RATE_NOCACHE),
 	.type = CLK_DET_TYPE_CRT,
 	.ofs  = 0x438,
-	.output_sel = clkdet_outputs,
-	.n_output_sel = ARRAY_SIZE(clkdet_outputs),
-	.mask_output_sel = BIT(31),
 };
 
 static struct clk_regmap_clkdet clk_det_pll_ve1 = {
 	.clkr.hw.init = CLK_HW_INIT_NO_PARENT("ref_pll_ve1", &clk_regmap_clkdet_ops, CLK_GET_RATE_NOCACHE),
 	.type = CLK_DET_TYPE_CRT,
 	.ofs  = 0x43c,
-	.output_sel = clkdet_outputs,
-	.n_output_sel = ARRAY_SIZE(clkdet_outputs),
-	.mask_output_sel = BIT(31),
 };
 
 static struct clk_regmap_clkdet clk_det_pll_ve2 = {
 	.clkr.hw.init = CLK_HW_INIT_NO_PARENT("ref_pll_ve2", &clk_regmap_clkdet_ops, CLK_GET_RATE_NOCACHE),
 	.type = CLK_DET_TYPE_CRT,
 	.ofs  = 0x440,
-	.output_sel = clkdet_outputs,
-	.n_output_sel = ARRAY_SIZE(clkdet_outputs),
-	.mask_output_sel = BIT(31),
 };
 
 static struct clk_regmap_clkdet clk_det_pll_hifi = {
 	.clkr.hw.init = CLK_HW_INIT_NO_PARENT("ref_pll_hifi", &clk_regmap_clkdet_ops, CLK_GET_RATE_NOCACHE),
 	.type = CLK_DET_TYPE_CRT,
 	.ofs  = 0x448,
-	.output_sel = clkdet_outputs,
-	.n_output_sel = ARRAY_SIZE(clkdet_outputs),
-	.mask_output_sel = BIT(31),
 };
 
 static struct clk_fixed_factor pll_emmc_ref = {

@@ -19,58 +19,26 @@
 #define FREQ_MNO(_r, _m, _n, _o) \
 	{ .rate = _r, .val = ((_m) << 4) | ((_n) << 12) | ((_o) << 17), }
 
-static const struct freq_table acpu_tbl[] = {
-	FREQ_NF(550000000, 37, 1517),
-	FREQ_NF(594000000, 41, 0),
+static const struct freq_table scpu_tbl[] = {
+	FREQ_NF(1000000000, 34,   75),
+	FREQ_NF(1100000000, 37, 1517),
+	FREQ_NF(1200000000, 41,  910),
+	FREQ_NF(1200000000, 41,    0),
+	FREQ_NF(1300000000, 45,  303),
+	FREQ_NF(1400000000, 48, 1745),
+	FREQ_NF(1500000000, 52, 1137),
+	FREQ_NF(1600000000, 56,  530),
+
+	FREQ_NF(1700000000, 60,    0),
+	FREQ_NF(1800005000, 62,  833),
+	FREQ_NF(1900001000, 63, 1365),
+	FREQ_NF(1900003000, 64, 1466),
+	FREQ_NF(1900009000, 67,  758),
+
+	FREQ_NF(1800000000, 63, 1365),
+	FREQ_NF(1900000000, 67,  758),
+	FREQ_NF(2000000000, 71,  151),
 	FREQ_TABLE_END
-};
-
-#define RTD1619B_REG_PLL_ACPU1          0x10c
-#define RTD1619B_REG_PLL_ACPU2          0x110
-#define RTD1619B_REG_PLL_SSC_DIG_ACPU0  0x5c0
-#define RTD1619B_REG_PLL_SSC_DIG_ACPU1  0x5c4
-#define RTD1619B_REG_PLL_SSC_DIG_ACPU_DBG2 0x5d8
-
-static struct reg_sequence pll_acpu_seq_power_on[] = {
-	{RTD1619B_REG_PLL_ACPU1,         0x02060010}, // rs=0x8
-	{RTD1619B_REG_PLL_ACPU2,         0x00000005},
-	{RTD1619B_REG_PLL_ACPU2,         0x00000007},
-	{RTD1619B_REG_PLL_SSC_DIG_ACPU0, 0x0000000c},
-	{RTD1619B_REG_PLL_SSC_DIG_ACPU1, 0x00012ded},
-	{RTD1619B_REG_PLL_SSC_DIG_ACPU0, 0x0000000d, 150},
-	{RTD1619B_REG_PLL_ACPU1,         0x02060000}, // pi_bps=0
-	{RTD1619B_REG_PLL_ACPU2,         0x00000003},
-};
-
-static struct reg_sequence pll_acpu_seq_power_off[] = {
-	{RTD1619B_REG_PLL_ACPU2,         0x00000004},
-	{RTD1619B_REG_PLL_ACPU1,         0x02060010}, // pi_bps=1
-};
-
-static struct reg_sequence pll_acpu_seq_set_freq[] = {
-	{RTD1619B_REG_PLL_SSC_DIG_ACPU0, 0x0000000c},
-	{RTD1619B_REG_PLL_SSC_DIG_ACPU1, 0x00000000},
-	{RTD1619B_REG_PLL_SSC_DIG_ACPU0, 0x0000000d},
-};
-
-static struct clk_pll2 pll_acpu = {
-	.clkr.hw.init = CLK_HW_INIT("pll_acpu", "osc27m", &clk_pll2_ops,
-				    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED),
-	.seq_power_on = pll_acpu_seq_power_on,
-	.num_seq_power_on = ARRAY_SIZE(pll_acpu_seq_power_on),
-	.seq_power_off = pll_acpu_seq_power_off,
-	.num_seq_power_off = ARRAY_SIZE(pll_acpu_seq_power_off),
-	.seq_set_freq = pll_acpu_seq_set_freq,
-	.num_seq_set_freq = ARRAY_SIZE(pll_acpu_seq_set_freq),
-	.freq_reg = RTD1619B_REG_PLL_SSC_DIG_ACPU1,
-	.freq_tbl  = acpu_tbl,
-	.freq_mask = 0x7ffff,
-	.freq_ready_reg = RTD1619B_REG_PLL_SSC_DIG_ACPU_DBG2,
-	.freq_ready_mask = BIT(20),
-	.freq_ready_val = BIT(20),
-	.power_reg = RTD1619B_REG_PLL_ACPU2,
-	.power_mask = 0x7,
-	.power_val_on = 0x3,
 };
 
 static const struct freq_table bus_tbl[] = {
@@ -503,14 +471,6 @@ static struct clk_regmap_gate clk_en_jpeg = {
 	.write_en = 1,
 };
 
-static struct clk_regmap_gate clk_en_acpu = {
-	.clkr.hw.init = CLK_HW_INIT("clk_en_acpu", "pll_acpu", &clk_regmap_gate_ops,
-				    CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED),
-	.gate_ofs = 0x58,
-	.bit_idx = 6,
-	.write_en = 1,
-};
-
 static struct clk_regmap_gate clk_en_misc_sc0 = {
 	.clkr.hw.init = CLK_HW_INIT("clk_en_misc_sc0", "misc", &clk_regmap_gate_ops, 0),
 	.gate_ofs = 0x58,
@@ -853,8 +813,6 @@ static struct clk_regmap *rtd1619b_cc_clks[] = {
 	&clk_ve2.clkr,
 	&clk_ve3.clkr,
 	&clk_ve3_bpu.clkr,
-	&pll_acpu.clkr,
-	&clk_en_acpu.clkr,
 };
 
 static struct clk_hw_onecell_data rtd1619b_cc_hw_data = {
@@ -941,8 +899,6 @@ static struct clk_hw_onecell_data rtd1619b_cc_hw_data = {
 		[RTD1619B_CRT_PLL_EMMC] = &__clk_pll_mmc_hw(&pll_emmc),
 		[RTD1619B_CRT_PLL_EMMC_VP0] = &pll_emmc.phase0_hw,
 		[RTD1619B_CRT_PLL_EMMC_VP1] = &pll_emmc.phase1_hw,
-		[RTD1619B_CRT_PLL_ACPU] = &__clk_pll2_hw(&pll_acpu),
-		[RTD1619B_CRT_CLK_EN_ACPU] = &__clk_regmap_gate_hw(&clk_en_acpu),
 		[RTD1619B_CRT_CLK_MAX] = NULL,
 	},
 };

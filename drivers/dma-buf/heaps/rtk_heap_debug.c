@@ -497,9 +497,8 @@ static int rtk_heap_summay_fops_show(struct seq_file *m, void *v)
 		used_bit = bitmap_weight(ch->use_bitmap,
 					 (int)cma_bitmap_maxno(ch->cma));
 		used_pages = used_bit << ch->cma->order_per_bit;
-		seq_printf(m, "\t\tUsage: 0x%-8lx pages, free: 0x%-8lx pages, "
-					  "Max_usage: 0x%-8lx pages\n",
-			   used_pages, (ch->cma->count) - used_pages, ch->max_used_pages);
+		seq_printf(m, "\t\tUsage: 0x%-8lx pages, free: 0x%-8lx pages\n",
+			   used_pages, (ch->cma->count) - used_pages);
 		list_for_each_entry_safe(rtk_heap_task, tmp, &ch->task_list,
 					  list) {
 			seq_printf(m, "\t\t%-18s: alloc %-8ld bytes\n",
@@ -540,9 +539,8 @@ static int rtk_heap_summay_fops_show(struct seq_file *m, void *v)
 		kfree(name);
 		used_pages = (heap_size - heap_avail) >> PAGE_SHIFT;
 		seq_printf(m,
-			   "\t\tUsage: 0x%-8lx pages, free: 0x%-8llx pages "
-			   "Max_usage: 0x%-8lx pages\n",
-			   used_pages, heap_avail >> PAGE_SHIFT, gh->max_used_pages);
+			   "\t\tUsage: 0x%-8lx pages, free: 0x%-8llx pages\n",
+			   used_pages, heap_avail >> PAGE_SHIFT);
 		mutex_lock(&gh->mutex);
 		list_for_each_entry_safe(rtk_heap_task, tmp, &gh->task_list,
 					  list) {

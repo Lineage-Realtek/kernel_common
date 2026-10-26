@@ -86,17 +86,18 @@ static int dw_mci_pltfm_probe(struct platform_device *pdev)
 	return dw_mci_pltfm_register(pdev, drv_data);
 }
 
-void dw_mci_pltfm_remove(struct platform_device *pdev)
+int dw_mci_pltfm_remove(struct platform_device *pdev)
 {
 	struct dw_mci *host = platform_get_drvdata(pdev);
 
 	dw_mci_remove(host);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(dw_mci_pltfm_remove);
 
 static struct platform_driver dw_mci_pltfm_driver = {
 	.probe		= dw_mci_pltfm_probe,
-	.remove_new	= dw_mci_pltfm_remove,
+	.remove		= dw_mci_pltfm_remove,
 	.driver		= {
 		.name		= "dw_mmc",
 		.of_match_table	= dw_mci_pltfm_match,

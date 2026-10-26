@@ -297,11 +297,12 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 	if (data.flags)
 		return -EINVAL;
 
-	shm = tee_shm_alloc_user_buf(ctx, data.size);
+	shm = tee_shm_alloc(ctx, data.size, TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		return PTR_ERR(shm);
 
 	data.id = shm->id;
+	data.flags = shm->flags;
 	data.size = shm->size;
 
 	if (copy_to_user(udata, &data, sizeof(data)))
@@ -333,17 +334,58 @@ tee_ioctl_shm_register(struct tee_context *ctx,
 	if (data.flags)
 		return -EINVAL;
 
-	shm = tee_shm_register_user_buf(ctx, data.addr, data.length);
+	if (!access_ok((void __user *)(unsigned long)data.addr, data.length))
+		return -EFAULT;
+
+	shm = tee_shm_register(ctx, data.addr, data.length,
+			       TEE_SHM_DMA_BUF | TEE_SHM_USER_MAPPED);
 	if (IS_ERR(shm))
 		return PTR_ERR(shm);
 
 	data.id = shm->id;
+	data.flags = shm->flags;
 	data.length = shm->size;
 
 	if (copy_to_user(udata, &data, sizeof(data)))
 		ret = -EFAULT;
 	else
 		ret = tee_shm_get_fd(shm);
+	/*
+	 * When user space closes the file descriptor the shared memory
+	 * should be freed or if tee_shm_get_fd() failed then it will
+	 * be freed immediately.
+	 */
+	tee_shm_put(shm);
+	return ret;
+}
+
+static int tee_ioctl_shm_register_fd(struct tee_context *ctx,
+			struct tee_ioctl_shm_register_fd_data __user *udata)
+{
+	struct tee_ioctl_shm_register_fd_data data;
+	struct tee_shm *shm;
+	long ret;
+
+	if (copy_from_user(&data, udata, sizeof(data)))
+		return -EFAULT;
+
+	/* Currently no input flags are supported */
+	if (data.flags)
+		return -EINVAL;
+
+	shm = tee_shm_register_fd(ctx, data.fd);
+	if (IS_ERR_OR_NULL(shm))
+		return -EINVAL;
+
+	data.id = shm->id;
+	data.flags = shm->flags;
+	data.size = shm->size;
+
+	if (copy_to_user(udata, &data, sizeof(data)))
+		ret = -EFAULT;
+	else
+		ret = tee_shm_get_fd(shm);
+
 	/*
 	 * When user space closes the file descriptor the shared memory
 	 * should be freed or if tee_shm_get_fd() failed then it will
@@ -827,6 +869,8 @@ static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return tee_ioctl_shm_alloc(ctx, uarg);
 	case TEE_IOC_SHM_REGISTER:
 		return tee_ioctl_shm_register(ctx, uarg);
+	case TEE_IOC_SHM_REGISTER_FD:
+		return tee_ioctl_shm_register_fd(ctx, uarg);
 	case TEE_IOC_OPEN_SESSION:
 		return tee_ioctl_open_session(ctx, uarg);
 	case TEE_IOC_INVOKE:
@@ -1073,7 +1117,7 @@ EXPORT_SYMBOL_GPL(tee_device_unregister);
 /**
  * tee_get_drvdata() - Return driver_data pointer
  * @teedev:	Device containing the driver_data pointer
- * @returns the driver_data pointer supplied to tee_device_alloc().
+ * @returns the driver_data pointer supplied to tee_register().
  */
 void *tee_get_drvdata(struct tee_device *teedev)
 {
@@ -1207,7 +1251,7 @@ static int tee_client_device_match(struct device *dev,
 	return 0;
 }
 
-static int tee_client_device_uevent(const struct device *dev,
+static int tee_client_device_uevent(struct device *dev,
 				    struct kobj_uevent_env *env)
 {
 	uuid_t *dev_id = &to_tee_client_device(dev)->id.uuid;
@@ -1226,7 +1270,7 @@ static int __init tee_init(void)
 {
 	int rc;
 
-	tee_class = class_create("tee");
+	tee_class = class_create(THIS_MODULE, "tee");
 	if (IS_ERR(tee_class)) {
 		pr_err("couldn't create class\n");
 		return PTR_ERR(tee_class);

@@ -1079,7 +1079,7 @@ out:
 		mmc->card->mmc_avail_type &= ~ (EXT_CSD_CARD_TYPE_HS400ES | EXT_CSD_CARD_TYPE_HS400_1_8V);
 		priv->emmc_mode = 2;
 		priv->down_speed = 1;
-		mmc_hw_reset(mmc->card);
+		mmc_hw_reset(mmc);
 	}
 
 }
@@ -1223,7 +1223,7 @@ static void dw_mci_rtk_hs400_complete(struct mmc_host *mmc)
 		host->pdata->caps2 &= ~MMC_CAP2_HS400_1_8V;
 		mmc->card->mmc_avail_type &= ~EXT_CSD_CARD_TYPE_HS400_1_8V;
 		priv->emmc_mode = 2;
-		mmc_hw_reset(mmc->card);
+		mmc_hw_reset(mmc);
 	}
 }
 

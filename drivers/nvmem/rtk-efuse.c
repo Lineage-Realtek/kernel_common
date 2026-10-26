@@ -39,10 +39,10 @@ struct rtk_efuse_desc {
 	int size;                /* data size */
 	int dat_reg_sel;         /* use an alternative data register */
 	int ctl_offset;          /* ctl register offset */
-	int enable_icg : 1;      /* setup icg */
-	int writable : 1;        /* data is writable */
-	int recalibrate_dco : 1; /* recalibrate dco when use dco */
-	int has_clk_det : 1;     /* hw contains clk_det */
+	u32 enable_icg : 1;      /* setup icg */
+	u32 writable : 1;        /* data is writable */
+	u32 recalibrate_dco : 1; /* recalibrate dco when use dco */
+	u32 has_clk_det : 1;     /* hw contains clk_det */
 };
 
 struct rtk_efuse_device {

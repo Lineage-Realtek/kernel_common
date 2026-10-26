@@ -87,6 +87,7 @@ static const struct rtk_clk_desc rtd1625_iso_desc = {
 	.num_reset_banks = ARRAY_SIZE(rtd1625_iso_reset_banks),
 };
 
+#ifdef RTD1625_ISO_S_CLK_MAX
 static CLK_REGMAP_GATE_NO_PARENT(clk_en_irda, 0, 0x314, 6, 1);
 static CLK_REGMAP_GATE_NO_PARENT(clk_en_ur10, CLK_IGNORE_UNUSED, 0x314, 8, 1);
 
@@ -115,6 +116,7 @@ static const struct rtk_clk_desc rtd1625_iso_s_desc = {
 	.reset_banks     = rtd1625_iso_s_reset_banks,
 	.num_reset_banks = ARRAY_SIZE(rtd1625_iso_s_reset_banks),
 };
+#endif
 
 static int rtd1625_iso_probe(struct platform_device *pdev)
 {
@@ -129,7 +131,9 @@ static int rtd1625_iso_probe(struct platform_device *pdev)
 
 static const struct of_device_id rtd1625_iso_match[] = {
 	{ .compatible = "realtek,rtd1625-iso-clk", .data = &rtd1625_iso_desc },
+#ifdef RTD1625_ISO_S_CLK_MAX
 	{ .compatible = "realtek,rtd1625-iso-s-clk", .data = &rtd1625_iso_s_desc },
+#endif
 	{ /* sentinel */ }
 };
 

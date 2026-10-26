@@ -314,32 +314,6 @@ static struct rtk_heap_data rheap_data_v2[] = {
 		.devname = "vo_non-vc-ac-ve",
 	},
 
-	{
-		.name = "npp",
-		.flags = (RTK_FLAG_CMA |
-			  RTK_FLAG_PROTECTED_DYNAMIC |
-			  RTK_FLAG_PROTECTED_V2_NPU_PP_POOL |
-			  RTK_FLAG_SUPPORT_NONCACHED),
-		.devname = "npp_secure10",
-	},
-
-	{
-		.name = "npu-inference",
-		.flags = (RTK_FLAG_CMA |
-			  RTK_FLAG_PROTECTED_DYNAMIC |
-			  RTK_FLAG_PROTECTED_V2_NPU_INFERENCE_POOL |
-			  RTK_FLAG_SUPPORT_NONCACHED),
-		.devname = "npu_inference_secure11",
-	},
-
-	{
-		.name = "npu-model",
-		.flags = (RTK_FLAG_CMA |
-			  RTK_FLAG_PROTECTED_DYNAMIC |
-			  RTK_FLAG_PROTECTED_V2_NPU_MODEL_POOL |
-			  RTK_FLAG_SUPPORT_NONCACHED),
-		.devname = "npu_model_secure12",
-	},
 #if 0
 	{
 		.name = "tee",
@@ -431,28 +405,6 @@ bool is_rtk_gen_heap(int flags)
 
 }
 
-
-static void rtk_cma_record_max_usage(struct rtk_heap *rtk_cma_heap)
-{
-	unsigned long used_bit, used_pages;
-
-	used_bit = bitmap_weight(rtk_cma_heap->use_bitmap,
-				 (int)cma_bitmap_maxno(rtk_cma_heap->cma));
-	used_pages = used_bit << rtk_cma_heap->cma->order_per_bit;
-	if (used_pages > rtk_cma_heap->max_used_pages)
-		rtk_cma_heap->max_used_pages = used_pages;
-}
-
-static void rtk_gen_record_max_usage(struct rtk_heap *rtk_gen_heap)
-{
-	size_t used_pages, avail, size;
-
-	size = gen_pool_size(rtk_gen_heap->gen_pool);
-	avail = gen_pool_avail(rtk_gen_heap->gen_pool);
-	used_pages = (size - avail) >> PAGE_SHIFT;
-	if (used_pages > rtk_gen_heap->max_used_pages)
-		rtk_gen_heap->max_used_pages = used_pages;
-}
 
 #ifdef CONFIG_ARM
 int rtk_dma_update_pte(pte_t *pte, unsigned long addr, void *data)
@@ -1147,7 +1099,6 @@ static struct page *rtk_cma_alloc(struct rtk_heap *rtk_heap, size_t count,
 	}
 
 	bitmap_set(rtk_heap->use_bitmap, bit_id, bitmap_count);
-	rtk_cma_record_max_usage(rtk_heap);
 	pfn = cma->base_pfn + (bit_id << cma->order_per_bit);
 	page = pfn_to_page(pfn);
 out:
@@ -1448,8 +1399,7 @@ struct page *rtk_dynamic_secure_allocate(struct rtk_heap *rtk_heap,
 		bitmap_set(rtk_heap->alloc_bitmap, bit_id, bitmap_count);
 
 		bitmap_set(rtk_heap->use_bitmap, bit_id, bitmap_count);
-		rtk_cma_record_max_usage(rtk_heap);
-		pr_debug("%s(%pS) no secure offset=0x%llx size=0x%lx\n",
+			pr_debug("%s(%pS) no secure offset=0x%llx size=0x%lx\n",
 			 __func__, __builtin_return_address(0),
 			 page_to_phys(pages), size);
 		if (!is_rtk_skip_zero(flags))
@@ -1529,7 +1479,6 @@ struct page *rtk_normal_allocate(struct rtk_heap *rtk_heap,
 
 	bitmap_set(rtk_heap->alloc_bitmap, bit_id, bitmap_count);
 	bitmap_set(rtk_heap->use_bitmap, bit_id, bitmap_count);
-	rtk_cma_record_max_usage(rtk_heap);
 	rtk_task_info_a(rtk_heap, offset, size, caller);
 
 out:
@@ -1712,7 +1661,6 @@ static struct dma_buf *rtk_gen_do_allocate(struct dma_heap *heap,
 	if (!pages)
 		goto out;
 
-	rtk_gen_record_max_usage(rtk_heap);
 	ret = dma_buf_allocate(heap, size, pages, rtk_gen_free, flags,
 				uncached);
 	if (IS_ERR_OR_NULL(ret)) {
@@ -2819,8 +2767,8 @@ __attribute__((unused)) static void dmabuf_heap_flags_validation(void *data, str
 }
 /*****************************************************************************
  ****************************************************************************/
-static ssize_t best_fit_heap_store(const struct class *class,
-				    const struct class_attribute *attr,
+static ssize_t best_fit_heap_store(struct class *class,
+				    struct class_attribute *attr,
 				    const char *buf,
 				    size_t count)
 {
@@ -2828,8 +2776,8 @@ static ssize_t best_fit_heap_store(const struct class *class,
 	return count;
 }
 
-static ssize_t best_fit_heap_show(const struct class *class,
-				 const struct class_attribute *attr,
+static ssize_t best_fit_heap_show(struct class *class,
+				 struct class_attribute *attr,
 				 char *buf)
 {
 	LIST_HEAD(best_list);
@@ -2981,7 +2929,7 @@ static int __init rheap_init(void)
 	cma_for_each_area(rheap_cma_check, NULL);
 	rheap_rmem_check();
 
-	rtk_heap_class = class_create(DEVNAME);
+	rtk_heap_class = class_create(THIS_MODULE, DEVNAME);
 	if (IS_ERR(rtk_heap_class)) {
 		ret = PTR_ERR(rtk_heap_class);
 		rtk_heap_class = NULL;

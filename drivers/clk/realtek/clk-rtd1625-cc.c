@@ -702,7 +702,9 @@ static struct clk_hw_onecell_data rtd1625_cc_hw_data = {
 		[RTD1625_CRT_CLK_EN_TPB] = &__clk_regmap_gate_hw(&clk_en_tpb),
 		[RTD1625_CRT_CLK_EN_MISC_SC1] = &__clk_regmap_gate_hw(&clk_en_misc_sc1),
 		[RTD1625_CRT_CLK_EN_MISC_I2C_3] = &__clk_regmap_gate_hw(&clk_en_misc_i2c_3),
+#ifdef RTD1625_CRT_CLK_EN_ACPU
 		[RTD1625_CRT_CLK_EN_ACPU] = &__clk_regmap_gate_hw(&clk_en_acpu),
+#endif
 		[RTD1625_CRT_CLK_EN_JPEG] = &__clk_regmap_gate_hw(&clk_en_jpeg),
 		[RTD1625_CRT_CLK_EN_MISC_SC0] = &__clk_regmap_gate_hw(&clk_en_misc_sc0),
 		[RTD1625_CRT_CLK_EN_HDMIRX] = &__clk_regmap_gate_hw(&clk_en_hdmirx),
@@ -790,8 +792,12 @@ static struct clk_hw_onecell_data rtd1625_cc_hw_data = {
 		[RTD1625_CRT_PLL_EMMC] = &__clk_pll_mmc_hw(&pll_emmc),
 		[RTD1625_CRT_PLL_EMMC_VP0] = &pll_emmc.phase0_hw,
 		[RTD1625_CRT_PLL_EMMC_VP1] = &pll_emmc.phase1_hw,
+#ifdef RTD1625_CRT_PLL_ACPU
 		[RTD1625_CRT_PLL_ACPU] = &__clk_pll2_hw(&pll_acpu),
+#endif
+#ifdef RTD1625_CRT_CLK_DET
 		[RTD1625_CRT_CLK_DET] = &__clk_regmap_clkdet_hw(&clk_det),
+#endif
 		[RTD1625_CRT_CLK_NPU] = &clk_npu.hw,
 		[RTD1625_CRT_CLK_NPU_MIPI_CSI] = &clk_npu_mipi_csi.hw,
 

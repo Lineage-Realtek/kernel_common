@@ -295,7 +295,7 @@ static void dma_heap_dma_buf_release(struct dma_buf *dmabuf)
 	dma_heap_buffer_destroy(buffer);
 }
 
-static int dma_heap_dma_buf_kmap(struct dma_buf *dmabuf, struct iosys_map *map)
+static int dma_heap_dma_buf_kmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
 	struct dma_heap_buffer *heap_buffer = dmabuf->priv;
 	struct heap_helper_buffer *buffer = to_helper_buffer(heap_buffer);
@@ -314,7 +314,7 @@ static int dma_heap_dma_buf_kmap(struct dma_buf *dmabuf, struct iosys_map *map)
 	return 0;
 }
 
-static void dma_heap_dma_buf_kunmap(struct dma_buf *dmabuf, struct iosys_map *map)
+static void dma_heap_dma_buf_kunmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
 	struct dma_heap_buffer *heap_buffer = dmabuf->priv;
 	struct heap_helper_buffer *buffer = to_helper_buffer(heap_buffer);
