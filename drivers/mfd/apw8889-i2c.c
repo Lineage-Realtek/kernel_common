@@ -70,7 +70,8 @@ static struct mfd_cell apw8889_devs[] = {
 	},
 };
 
-static int apw8889_i2c_probe(struct i2c_client *client)
+static int apw8889_i2c_probe(struct i2c_client *client,
+			     const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct apw888x_device *adev;
@@ -113,9 +114,9 @@ static int apw8889_i2c_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void apw8889_i2c_remove(struct i2c_client *client)
+static int apw8889_i2c_remove(struct i2c_client *client)
 {
-	return;
+	return 0;
 }
 
 static const struct of_device_id apw8889_of_match[] = {
