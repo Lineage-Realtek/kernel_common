@@ -30,7 +30,8 @@ static int tee_mem_invoke_protected_create(struct tee_mem_device *memdev,
 	struct tee_mem_protected_create_ssid *info;
 	int ret;
 
-	tee_shm = tee_shm_alloc_kernel_buf(memdev->tee_context, sizeof(struct tee_mem_protected_create_ssid));
+	tee_shm = tee_shm_alloc(memdev->tee_context, sizeof(struct tee_mem_protected_create_ssid),
+		TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(tee_shm))
 		return PTR_ERR(tee_shm);
 
@@ -72,7 +73,8 @@ static int tee_mem_invoke_protected_destroy(struct tee_mem_device *memdev, long 
 	struct tee_mem_protected_destroy_ssid *info;
 	int ret;
 
-	tee_shm = tee_shm_alloc_kernel_buf(memdev->tee_context, sizeof(struct tee_mem_protected_destroy_ssid));
+	tee_shm = tee_shm_alloc(memdev->tee_context, sizeof(struct tee_mem_protected_destroy_ssid),
+		TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(tee_shm))
 		return PTR_ERR(tee_shm);
 
@@ -111,7 +113,8 @@ static int tee_mem_invoke_protected_change(struct tee_mem_device *memdev, long l
 	struct tee_mem_protected_change_ssid *info;
 	int ret;
 
-	tee_shm = tee_shm_alloc_kernel_buf(memdev->tee_context, sizeof(struct tee_mem_protected_change_ssid));
+	tee_shm = tee_shm_alloc(memdev->tee_context, sizeof(struct tee_mem_protected_change_ssid),
+		TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(tee_shm))
 		return PTR_ERR(tee_shm);
 
@@ -154,9 +157,11 @@ static int tee_mem_invoke_protected_ext_slot(struct tee_mem_device *memdev, phys
 	struct tee_mem_protected_ext_set_ssid *info;
 	int ret;
 
-	tee_shm = tee_shm_alloc_kernel_buf(memdev->tee_context, sizeof(struct tee_mem_protected_ext_set_ssid));
-	if (IS_ERR(tee_shm))
+	tee_shm = tee_shm_alloc(memdev->tee_context, sizeof(struct tee_mem_protected_ext_set_ssid),
+		TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
+	if (IS_ERR(tee_shm)) {
 		return PTR_ERR(tee_shm);
+	}
 
 	info = tee_shm_get_va(tee_shm, 0);
 	info->mem.base           = base;
@@ -198,7 +203,9 @@ static int tee_mem_priotected_ext_destroy(struct tee_mem_device *memdev, long lo
 	struct tee_mem_protected_ext_unset_ssid *info;
 	int ret;
 
-	tee_shm = tee_shm_alloc_kernel_buf(memdev->tee_context, sizeof(struct tee_mem_protected_ext_unset_ssid));
+	tee_shm = tee_shm_alloc(memdev->tee_context,
+				sizeof(struct tee_mem_protected_ext_unset_ssid),
+				TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(tee_shm))
 		return PTR_ERR(tee_shm);
 
@@ -255,7 +262,7 @@ struct tee_mem_protected_slot *tee_mem_protected_create(struct tee_mem_device *m
         phys_addr_t base, size_t size, unsigned int type)
 {
 	struct tee_mem_protected_slot *slot;
-	long long ssid = 0;
+	long long ssid;
 	int ret;
 
 	slot = kzalloc(sizeof(*slot), GFP_KERNEL);
@@ -333,7 +340,7 @@ struct tee_mem_protected_ext_slot *tee_mem_protected_ext_create(struct tee_mem_d
 	phys_addr_t base, size_t size, unsigned int ext, struct tee_mem_protected_slot *parent)
 {
 	struct tee_mem_protected_ext_slot *slot;
-	long long ssid = 0;
+	long long ssid;
 	int ret;
 
 	slot = kzalloc(sizeof(*slot), GFP_KERNEL);
