@@ -18,14 +18,11 @@ struct rtk_reboot_mode_data {
 	void *base;
 };
 
-static unsigned int default_action = RESET_ACTION_NO_ACTION;
-module_param(default_action, uint, 0644);
-
 static int rtk_reboot_mode_cb(struct notifier_block *nb, unsigned long mode,
 			      void *cmd)
 {
 	struct rtk_reboot_mode_data *d;
-	u32 act = default_action;
+	u32 act = RESET_ACTION_NO_ACTION;
 
 	d = container_of(nb, struct rtk_reboot_mode_data, reboot_nb);
 	if (cmd) {
