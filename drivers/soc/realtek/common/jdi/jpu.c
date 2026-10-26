@@ -721,7 +721,7 @@ static int jpu_probe(struct platform_device *pdev)
 	s_jpu_dev.this_device->coherent_dma_mask = DMA_BIT_MASK(32);
 	s_jpu_dev.this_device->dma_mask = (u64 *)&s_jpu_dev.this_device
 						->coherent_dma_mask;
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	set_dma_ops(s_jpu_dev.this_device, &rheap_dma_ops);
 	rheap_setup_dma_pools(s_jpu_dev.this_device, "rtk_media_heap",
 			RTK_FLAG_SCPUACC | RTK_FLAG_HWIPACC |

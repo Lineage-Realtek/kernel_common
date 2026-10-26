@@ -187,7 +187,7 @@ static u32 s_vpu_reg_store[MAX_NUM_VPU_CORE][64];
 #define WriteVpuRegister(addr, val, core) *(volatile unsigned int *)(s_vpu_register.virt_addr + (0x8000 * core) + addr) = (unsigned int)val
 #define WriteVpu(addr, val) *(volatile unsigned int *)(addr) = (unsigned int)val;
 
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 static unsigned int to_heapflag(unsigned int mem_type)
 {
 	unsigned int flags;
@@ -258,7 +258,7 @@ int kent_vpu_alloc_dma_buffer(vpudrv_buffer_t *vb)
 	vb->base = (unsigned long)(s_video_memory.base + (vb->phys_addr - s_video_memory.phys_addr));
 #else
 	mutex_lock(&p_vpu_dev->mutex);
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	rheap_setup_dma_pools(s_vpu_dev.this_device, "rtk_media_heap",
 				to_heapflag(vb->mem_type), __func__);
 #endif
@@ -291,7 +291,7 @@ static int vpu_alloc_dma_buffer2(vpudrv_buffer_t *vb)
 	vb->base = (unsigned long)(s_video_memory.base + (vb->phys_addr - s_video_memory.phys_addr));
 #else
 	mutex_lock(&p_vpu_dev->mutex);
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	rheap_setup_dma_pools(s_vpu_dev.this_device, "rtk_media_heap",
 				to_heapflag(vb->mem_type), __func__);
 #endif
@@ -1729,7 +1729,7 @@ static int vpu_probe(struct platform_device *pdev)
 	s_vpu_dev.this_device->coherent_dma_mask = DMA_BIT_MASK(32);
 	s_vpu_dev.this_device->dma_mask = (u64 *)&s_vpu_dev.this_device
 						->coherent_dma_mask;
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	set_dma_ops(s_vpu_dev.this_device, &rheap_dma_ops);
 #endif
 

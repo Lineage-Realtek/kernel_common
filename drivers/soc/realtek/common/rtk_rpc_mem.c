@@ -303,7 +303,7 @@ int r_program_fd(unsigned long phys_addr, unsigned long *offset,
 			    phys_addr < (curr->phys_addr + curr->size)) {
 
 				exp_info.ops = &rpc_dma_buf_ops;
-				exp_info.size = PAGE_ALIGN(curr->size);
+				exp_info.size = curr->size;
 				exp_info.flags = O_RDWR;
 				exp_info.priv = curr;
 				curr->dmabuf = dma_buf_export(&exp_info);
@@ -529,7 +529,7 @@ unsigned int rpc_ion_alloc_handler_legacy(struct rtk_rpc_client *client, bool se
 	if (fw_send_value & FW_ALLOC_VCPU_EXTRA)
 		alloc_flags |= RTK_FLAG_CMA;
 
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	rheap_setup_dma_pools(dev, "rtk_media_heap", alloc_flags, client->name);
 #endif
 	cookie = dma_alloc_attrs(dev, alloc_val, &daddr, GFP_KERNEL, DMA_ATTR_NO_KERNEL_MAPPING);
@@ -609,7 +609,7 @@ unsigned int rpc_ion_alloc_handler(struct rtk_rpc_client *client, const struct f
 	pr_info("%s alloc_size=0x%lx  ion_alloc_flags=0x%x \n", __func__,
 				alloc_val, ion_alloc_flags);
 
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	rheap_setup_dma_pools(dev, "rtk_media_heap", ion_alloc_flags, client->name);
 #endif
 	cookie = dma_alloc_attrs(dev, alloc_val, &daddr, GFP_KERNEL,
@@ -784,7 +784,7 @@ static int rtk_rpc_probe(struct rpmsg_device *rpdev)
 
 	client->dev->coherent_dma_mask = DMA_BIT_MASK(32);
 	client->dev->dma_mask = (u64 *)&client->dev->coherent_dma_mask;
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	set_dma_ops(client->dev, &rheap_dma_ops);
 #endif
 	client->big_endian = !rpdev->little_endian;
@@ -847,5 +847,4 @@ static void __exit rtk_rpc_exit(void)
 }
 module_exit(rtk_rpc_exit);
 
-MODULE_IMPORT_NS(DMA_BUF);
 MODULE_LICENSE("GPL");

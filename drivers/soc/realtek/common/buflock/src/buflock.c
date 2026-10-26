@@ -521,7 +521,7 @@ static int __init buflock_module_init (void)
 			NULL,                  // driver data
 			MODULE_NAME);          // device name
 
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	set_dma_ops(module->device, &rheap_dma_ops);
 	rheap_setup_dma_pools(module->device, "rtk_audio_heap",
 			RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
