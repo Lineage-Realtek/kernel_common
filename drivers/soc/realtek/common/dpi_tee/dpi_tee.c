@@ -92,7 +92,7 @@ static int dpi_invoke_cmd_setup_params(struct dpi_tee_device *dpi)
 	struct dpi_params *p;
 	int ret;
 
-	tee_shm = tee_shm_alloc_priv_buf(dpi->tee_context, sizeof(*p));
+	tee_shm = tee_shm_alloc(dpi->tee_context, sizeof(*p), TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(tee_shm))
 		return PTR_ERR(tee_shm);
 
@@ -280,9 +280,7 @@ static int dpi_tee_reboot_helper(void *arg)
 			flush_signals(current);
 		}
 
-		__set_current_state(TASK_INTERRUPTIBLE|TASK_FREEZABLE);
-		schedule_timeout(msecs_to_jiffies(2000));
-
+		freezable_schedule_timeout_interruptible(msecs_to_jiffies(2000));
 	}  while (!kthread_should_stop());
 
 	return 0;
