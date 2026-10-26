@@ -87,6 +87,8 @@
 
 #include <asm/io.h>
 #include <asm/irq.h>
+#include <linux/of.h>
+#include <linux/of_net.h>
 
 #include "r8168.h"
 #include "r8168_asf.h"
@@ -26636,7 +26638,8 @@ static int
 rtl8168_get_mac_address(struct net_device *dev)
 {
         struct rtl8168_private *tp = netdev_priv(dev);
-        int i;
+        struct device_node *np;
+        int i, ret;
         u8 mac_addr[MAC_ADDR_LEN];
 
         for (i = 0; i < MAC_ADDR_LEN; i++)
@@ -26699,6 +26702,16 @@ rtl8168_get_mac_address(struct net_device *dev)
                                 *pUshort = rtl8168_eeprom_read_sc(tp, 9);
                         }
                 }
+        }
+
+        /* use the MAC address of the SoC ethernet */
+        np = of_find_node_by_path("/soc@0/rbus@98000000/r8169soc@16000");
+        if (!np) {
+                pr_err("Failed to find the node\n");
+        } else {
+                ret = of_get_mac_address(np, mac_addr);
+                if (ret)
+                        pr_err("Failed to get MAC address, error %d\n", ret);
         }
 
         if (!is_valid_ether_addr(mac_addr)) {
