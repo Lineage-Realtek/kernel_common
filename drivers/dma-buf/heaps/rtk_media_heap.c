@@ -352,7 +352,6 @@ static int rtk_toc_type(int flags)
 	return (flags & RTK_FLAG_TOC_MASK);
 }
 
-
 int rtk_protected_type(int flags)
 {
 	return (flags & RTK_FLAG_PROTECTED_MASK);
@@ -402,61 +401,7 @@ bool is_rtk_gen_heap(int flags)
 		return false;
 	return true;
 
-
 }
-
-
-#ifdef CONFIG_ARM
-int rtk_dma_update_pte(pte_t *pte, unsigned long addr, void *data)
-{
-	struct page *page = virt_to_page(addr);
-	pgprot_t prot = *(pgprot_t *)data;
-
-	set_pte_ext(pte, mk_pte(page, prot), 0);
-	return 0;
-}
-
-void set_highmem_prot(struct page *page, unsigned long vaddr, pgprot_t prot)
-{
-	int index;
-
-	if (vaddr >= PKMAP_ADDR(0) && vaddr < PKMAP_ADDR(LAST_PKMAP)) {
-		index = PKMAP_NR(vaddr);
-		set_pte_ext(&(pkmap_page_table[index]), mk_pte(page, prot), 0);
-	}
-
-}
-
-void rtk_dma_remap(struct page *page, size_t size, pgprot_t prot)
-{
-	int nr_pages = size >> PAGE_SHIFT;
-	unsigned long start;
-	unsigned end;
-	int i;
-
-	if (PageHighMem(page)) {
-		for (i = 0; i < nr_pages; i++) {
-			start = (unsigned long) page_address(page);
-			if (start) {
-				set_highmem_prot(page, start, prot);
-				flush_tlb_kernel_range(start, start+PAGE_SIZE); // page by page
-			}
-			page++;
-		}
-	} else {
-		start = (unsigned long) page_address(page);
-		end = start + size;
-		apply_to_page_range(&init_mm, start, size, rtk_dma_update_pte, &prot);
-		flush_tlb_kernel_range(start, end);
-	}
-
-}
-#else
-void rtk_dma_remap(struct page *page, size_t size, pgprot_t prot)
-{
-
-}
-#endif
 
 static struct rtk_protect_info *find_protect_info(struct rtk_heap *rtk_heap,
 					 unsigned long offset, bool gen)
@@ -481,7 +426,6 @@ static struct rtk_protect_info *find_protect_info(struct rtk_heap *rtk_heap,
 	return ret;
 }
 
-
 static struct rtk_protect_info *find_protect_info_in(void *rtk_heap,
 					 unsigned long offset, size_t size,
 					 bool gen)
@@ -499,7 +443,6 @@ static struct rtk_protect_info *find_protect_info_in(void *rtk_heap,
 
 	return pr_info_0;
 }
-
 
 static struct rtk_protect_ext_info *find_protect_ext_info(
 				 struct rtk_heap *rtk_heap,
@@ -527,7 +470,6 @@ static struct rtk_protect_ext_info *find_protect_ext_info(
 
 	return ret;
 }
-
 
 static inline enum e_notifier_protect_ext _flag_to_notifier_protect_ext
 					(unsigned long flags)
@@ -913,7 +855,6 @@ void rtk_dynamic_secure_free(struct rtk_heap *rtk_heap, struct page *pages,
 
 		pages = pfn_to_page(pfn);
 		nr_pages = size >> PAGE_SHIFT;
-		rtk_dma_remap(pages, size, PAGE_KERNEL);
 		cma_release(cma, pages, nr_pages);
 
 		goto finished;
@@ -959,7 +900,6 @@ void rtk_dynamic_secure_free(struct rtk_heap *rtk_heap, struct page *pages,
 
 		pages = pfn_to_page(pfn);
 		nr_pages = size >> PAGE_SHIFT;
-		rtk_dma_remap(pages, size, PAGE_KERNEL);
 		cma_release(cma, pages, nr_pages);
 
 		goto finished;
@@ -1011,7 +951,6 @@ void rtk_dynamic_secure_free(struct rtk_heap *rtk_heap, struct page *pages,
 
 		pages = pfn_to_page(pfn);
 		nr_pages = size >> PAGE_SHIFT;
-		rtk_dma_remap(pages, size, PAGE_KERNEL);
 		cma_release(cma, pages, nr_pages);
 
 
@@ -1319,7 +1258,7 @@ struct page *rtk_dynamic_secure_allocate(struct rtk_heap *rtk_heap,
 			align = get_order(SZ_2M);
 			p_size = ALIGN(len, SZ_2M);
 			nr_pages = p_size >> PAGE_SHIFT;
-			pages = cma_alloc(cma, nr_pages, align, false);
+			pages = cma_alloc(cma, nr_pages, align, GFP_KERNEL);
 			if (!pages)
 				goto out;
 
@@ -1330,8 +1269,6 @@ struct page *rtk_dynamic_secure_allocate(struct rtk_heap *rtk_heap,
 			bit_id = (pfn - cma->base_pfn) >> cma->order_per_bit;
 			bitmap_set(rtk_heap->alloc_bitmap, bit_id,
 					 bitmap_count);
-
-			rtk_dma_remap(pages, p_size, pgprot_dmacoherent(PAGE_KERNEL));
 
 			dma_sync_single_for_device(
 					dma_heap_get_dev(rtk_heap->heap),
@@ -1387,7 +1324,7 @@ struct page *rtk_dynamic_secure_allocate(struct rtk_heap *rtk_heap,
 		}
 
 	} else {
-		pages = cma_alloc(cma, nr_pages, align, false);
+		pages = cma_alloc(cma, nr_pages, align, GFP_KERNEL);
 		if (!pages)
 			goto out;
 
@@ -1460,7 +1397,7 @@ struct page *rtk_normal_allocate(struct rtk_heap *rtk_heap,
 	align = 0;
 	nr_pages = size >> PAGE_SHIFT;
 
-	pages = cma_alloc(cma, nr_pages, align, false);
+	pages = cma_alloc(cma, nr_pages, align, GFP_KERNEL);
 	if (!pages)
 		goto out;
 	if (!is_rtk_skip_zero(flags))
@@ -1479,6 +1416,7 @@ struct page *rtk_normal_allocate(struct rtk_heap *rtk_heap,
 
 	bitmap_set(rtk_heap->alloc_bitmap, bit_id, bitmap_count);
 	bitmap_set(rtk_heap->use_bitmap, bit_id, bitmap_count);
+
 	rtk_task_info_a(rtk_heap, offset, size, caller);
 
 out:
@@ -1956,7 +1894,7 @@ static void *rtk_static_proctect_cma_create(struct cma *cma,
 		return NULL;
 	}
 	INIT_LIST_HEAD(&rtk_heap->task_list);
-	pages = cma_alloc(cma, cma->count, 0, false);
+	pages = cma_alloc(cma, cma->count, 0, GFP_KERNEL);
 	pfn = __page_to_pfn(pages);
 	base = page_to_phys(pages);
 
@@ -2177,11 +2115,11 @@ static void rtk_static_cma_create(struct cma *cma, char *name,
 			(void *)cma, name, nr_pages ? nr_pages : cma->count);
 
 	if (static_cma_size) {
-		pages = cma_alloc(cma, nr_pages, 0, false);
+		pages = cma_alloc(cma, nr_pages, 0, GFP_KERNEL);
 		if ((!pages) || (cma->base_pfn != page_to_pfn(pages)))
 			goto err;
 	} else {
-		if (!cma_alloc(cma, cma->count, 0, false))
+		if (!cma_alloc(cma, cma->count, 0, GFP_KERNEL))
 			goto err;
 	}
 
@@ -2736,7 +2674,7 @@ static unsigned long pre_alloc(struct rtk_heap *rtk_heap, u32 flags, u32 len,
 		nr_pages = len >> PAGE_SHIFT;
 
 		cma = rtk_heap->cma;
-		pages = cma_alloc(cma, len >> PAGE_SHIFT, align, false);
+		pages = cma_alloc(cma, len >> PAGE_SHIFT, align, GFP_KERNEL);
 		if (!pages)
 			goto out;
 		offset = page_to_phys(pages);

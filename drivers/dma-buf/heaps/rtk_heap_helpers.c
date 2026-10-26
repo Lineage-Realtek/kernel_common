@@ -174,7 +174,6 @@ struct dma_heaps_attachment {
 	struct device *dev;
 	struct sg_table *table;
 	struct list_head list;
-	bool mapped;
 };
 
 static int dma_heap_attach(struct dma_buf *dmabuf,
@@ -198,7 +197,6 @@ static int dma_heap_attach(struct dma_buf *dmabuf,
 	a->table = table;
 	a->dev = attachment->dev;
 	INIT_LIST_HEAD(&a->list);
-	a->mapped = false;
 
 	attachment->priv = a;
 
@@ -241,14 +239,12 @@ static struct sg_table *dma_heap_map_dma_buf(
 				direction, DMA_ATTR_SKIP_CPU_SYNC))
 			return ERR_PTR(-ENOMEM);
 
-		a->mapped = true;
 		return table;
 	}
 	if (!dma_map_sg(attachment->dev, table->sgl, table->nents,
 			direction))
 		return  ERR_PTR(-ENOMEM);
 
-	a->mapped = true;
 	return table;
 }
 
@@ -258,9 +254,7 @@ static void dma_heap_unmap_dma_buf(struct dma_buf_attachment *attachment,
 {
 	struct dma_buf *dmabuf = attachment->dmabuf;
 	struct dma_heap_buffer *heap_buffer = dmabuf->priv;
-	struct dma_heaps_attachment *a = attachment->priv;
 
-	a->mapped = false;
 	if (!(heap_buffer->flags & RTK_FLAG_SCPUACC) ||
 			 (heap_buffer->flags & RTK_FLAG_PROTECTED_MASK) )
 		dma_unmap_sg_attrs(attachment->dev, table->sgl, table->nents,
@@ -299,16 +293,8 @@ static int dma_heap_dma_buf_kmap(struct dma_buf *dmabuf, struct dma_buf_map *map
 {
 	struct dma_heap_buffer *heap_buffer = dmabuf->priv;
 	struct heap_helper_buffer *buffer = to_helper_buffer(heap_buffer);
-	void *vaddr;
 
-	mutex_lock(&buffer->lock);
-	vaddr = dma_heap_buffer_kmap_get(heap_buffer);
-	mutex_unlock(&buffer->lock);
-
-	if (IS_ERR_OR_NULL(vaddr))
-		return vaddr ? PTR_ERR(vaddr) : -ENOMEM;
-
-	map->vaddr = vaddr;
+	map->vaddr = buffer->vaddr;
 	map->is_iomem = false;
 
 	return 0;
@@ -316,12 +302,6 @@ static int dma_heap_dma_buf_kmap(struct dma_buf *dmabuf, struct dma_buf_map *map
 
 static void dma_heap_dma_buf_kunmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
-	struct dma_heap_buffer *heap_buffer = dmabuf->priv;
-	struct heap_helper_buffer *buffer = to_helper_buffer(heap_buffer);
-
-	mutex_lock(&buffer->lock);
-	dma_heap_buffer_kmap_put(heap_buffer);
-	mutex_unlock(&buffer->lock);
 }
 
 static int dma_heap_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
@@ -330,19 +310,22 @@ static int dma_heap_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 	struct dma_heap_buffer *heap_buffer = dmabuf->priv;
 	struct heap_helper_buffer *buffer = to_helper_buffer(heap_buffer);
 	struct dma_heaps_attachment *a;
+	void *vaddr;
 	int ret = 0;
 
 	mutex_lock(&buffer->lock);
+	vaddr = dma_heap_buffer_kmap_get(heap_buffer);
+	if (IS_ERR_OR_NULL(vaddr)) {
+		ret = PTR_ERR(vaddr);
+		goto unlock;
+	}
+
 	if (!(heap_buffer->flags & RTK_FLAG_SCPUACC)
 		|| (heap_buffer->flags & RTK_FLAG_PROTECTED_MASK)
 		|| (buffer->uncached))
 		goto unlock;
 
 	list_for_each_entry(a, &buffer->attachments, list) {
-		if (!a->mapped){
-			pr_debug("%s: attachments still no mapping\n",__func__);
-			continue;
-		}
 		dma_sync_sg_for_cpu(a->dev, a->table->sgl,
 			a->table->nents, direction);
 	}
@@ -359,16 +342,14 @@ static int dma_heap_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
 	struct dma_heaps_attachment *a;
 
 	mutex_lock(&buffer->lock);
+	dma_heap_buffer_kmap_put(heap_buffer);
+
 	if (!(heap_buffer->flags & RTK_FLAG_SCPUACC)
 		|| (heap_buffer->flags & RTK_FLAG_PROTECTED_MASK)
 		|| (buffer->uncached))
 		goto unlock;
 
 	list_for_each_entry(a, &buffer->attachments, list) {
-		if (!a->mapped){
-			pr_debug("%s: attachments still no mapping\n",__func__);
-			continue;
-		}
 		dma_sync_sg_for_device(a->dev, a->table->sgl,
 			 a->table->nents, direction);
 	}
