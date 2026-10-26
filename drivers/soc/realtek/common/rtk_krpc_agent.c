@@ -56,9 +56,8 @@ static void  krpc_work(struct work_struct *work)
 	struct rpc_struct *rpc;
 
 	spin_lock(&krpc_ept->queue_lock);
-	/* NOTE: as in the device build, this returns with queue_lock held */
 	if (skb_queue_empty(&krpc_ept->queue))
-		return;
+		return; /* NOTE: returns with queue_lock held, as in the device build */
 	skb = skb_dequeue(&krpc_ept->queue);
 	spin_unlock(&krpc_ept->queue_lock);
 
@@ -112,7 +111,6 @@ int krpc_info_init(struct rtk_krpc_ept_info *krpc_ept_info, char *name, krpc_cb 
 	struct rtk_krpc_ept *krpc_ept;
 	struct rpmsg_device *rpdev = agent->rpdev;
 	struct rpmsg_channel_info chinfo;
-
 
 	krpc_ept = kzalloc(sizeof(*krpc_ept), GFP_KERNEL);
 	if (!krpc_ept)
