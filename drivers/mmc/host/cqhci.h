@@ -116,6 +116,29 @@
 /* command response argument */
 #define CQHCI_CRA			0x5C
 
+#define CQHCI_CRNQP                    0x70
+#define CQHCI_CRNQDUN                  0x74
+
+//CFG0_key1
+#define CRYPTOCFG_0_0                  0x800
+#define CRYPTOCFG_0_1                  0x804
+#define CRYPTOCFG_0_2                  0x808
+#define CRYPTOCFG_0_3                  0x80c
+#define CRYPTOCFG_0_4                  0x810
+#define CRYPTOCFG_0_5                  0x814
+#define CRYPTOCFG_0_6                  0x818
+#define CRYPTOCFG_0_7                  0x81c
+//CFG0_key2
+#define CRYPTOCFG_0_8                  0x820
+#define CRYPTOCFG_0_9                  0x824
+#define CRYPTOCFG_0_10                 0x828
+#define CRYPTOCFG_0_11                 0x82c
+#define CRYPTOCFG_0_12                 0x830
+#define CRYPTOCFG_0_13                 0x834
+#define CRYPTOCFG_0_14                 0x838
+#define CRYPTOCFG_0_15                 0x83c
+//CFG0_config
+#define CRYPTOCFG_0_16                 0x840
 /* crypto capabilities */
 #define CQHCI_CCAP			0x100
 #define CQHCI_CRYPTOCAP			0x104
@@ -286,6 +309,8 @@ struct cqhci_host_ops {
 				 u64 *data);
 	void (*pre_enable)(struct mmc_host *mmc);
 	void (*post_disable)(struct mmc_host *mmc);
+	void (*setup_tran_desc)(struct mmc_data *data,
+                struct cqhci_host *cq_host, u8 *desc, int sg_count);
 #ifdef CONFIG_MMC_CRYPTO
 	int (*program_key)(struct cqhci_host *cq_host,
 			   const union cqhci_crypto_cfg_entry *cfg, int slot);
