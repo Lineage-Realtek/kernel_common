@@ -21,7 +21,6 @@
 
 #define WRAP_CTR_REG  0x0
 #define DISABLE_MULTI_REQ BIT(1)
-#define ORI_SUSPEND_MODE BIT(8)
 #define DESC_R2W_MULTI_DISABLE BIT(9)
 #define FORCE_PIPE3_PHY_STATUS_TO_0 BIT(13)
 
@@ -32,52 +31,18 @@
 #define RESET_DISABLE_PIPE3_P0 BIT(0)
 #define CLOCK_ENABLE_FOR_PIPE3_PCLK BIT(1)
 
-#define WRAP_USB2_SPD_CTR_REG 0x2C
-#define P1_UTMI_CLK_SEL BIT(1)
-#define P4_UTMI_CLK_SEL BIT(2)
-
 #define WRAP_USB_HMAC_CTR0_REG 0x60
-#define U2PORT_DIS_P2 BIT(11)
-#define U2PORT_DIS_P1 BIT(10)
-#define U2PORT_DIS_P0 BIT(9)
 #define U3PORT_DIS BIT(8)
-#define U2PORT_NUM_MASK 0xF0
-#define U2PORT_NUM(x) ((x & U2PORT_NUM_MASK)>>4)
-#define U3PORT_NUM_MASK 0x0F
-#define U3PORT_NUM(x) ((x & U3PORT_NUM_MASK))
 
 #define WRAP_USB2_PHY_REG  0x70
 #define USB2_PHY_EN_PHY_PLL_PORT0 BIT(12)
 #define USB2_PHY_EN_PHY_PLL_PORT1 BIT(13)
 #define USB2_PHY_SWITCH_MASK 0x707
-#define USB2_PHY_SWITCH_DEVICE 0x7
+#define USB2_PHY_SWITCH_DEVICE 0x0
 #define USB2_PHY_SWITCH_HOST 0x606
 
 #define WRAP_APHY_REG 0x128
 #define USB3_MBIAS_ENABLE BIT(1)
-
-#define WRAP_BC_CTL_REG 	0x130
-#define HOST_POWER_CHARGE_EN 	BIT(13)
-#define HOST_VDN_SRC_EN 	BIT(12)
-#define HOST_IDP_SINK_EN 	BIT(11)
-#define HOST_APP_DIV_EN 	BIT(10)
-#define HOST_APP_DIV_SEL 	BIT(9)
-#define HOST_DCP_APP_COMP_EN 	BIT(8)
-#define HOST_NOTE_DIV_EN 	BIT(7)
-#define HOST_DCP_EN 		BIT(6)
-#define DEV_POWER_CHARGE_EN 	BIT(5)
-#define DEV_DCP_CHG_MODE 	BIT(4)
-#define DEV_VDP_SRC_EN 		BIT(3)
-#define DEV_VDM_SRC_EN 		BIT(2)
-#define DEV_IDP_SINK_EN 	BIT(1)
-#define DEV_IDM_SINK_EN 	BIT(0)
-
-#define WRAP_DUMMY0_REG 0x134
-#define AUTO_INVERT_SETTING (0x5 << 27)
-#define AUTO_INVERT_EN BIT(26)
-#define MANUAL_INVERT_EN BIT(25)
-#define DETECT_INVERT_EN BIT(24)
-#define DETECT_CLK_MASK 0x00FF0000
 
 /* pm control */
 #define WRAP_USB_DBUS_PWR_CTRL_REG 0x160
@@ -240,13 +205,6 @@ static int dwc3_rtk_init(struct dwc3_rtk *rtk)
 		{ .family = "Realtek Hercules", }, { /* empty */ } };
 	const struct soc_device_attribute rtk_soc_thor[] = {
 		{ .family = "Realtek Thor", }, { /* empty */ } };
-	const struct soc_device_attribute rtk_soc_kent[] = {
-		{ .family = "Realtek Kent", },
-		{ /* empty */ } };
-	const struct soc_device_attribute rtk_soc_kent_big_pkg[] = {
-		{ .family = "Realtek Kent", .soc_id = "RTD1861B" },
-		{ .family = "Realtek Kent", .soc_id = "RTD1501B" },
-		{ /* empty */ } };
 
 	if (soc_device_match(rtk_soc_kylin_a00)) {
 		reg = rtk->regs + WRAP_CTR_REG;
@@ -297,55 +255,6 @@ static int dwc3_rtk_init(struct dwc3_rtk *rtk)
 	val = readl(reg);
 	writel(DESC_R2W_MULTI_DISABLE | val, reg);
 
-	if (soc_device_match(rtk_soc_kent)) {
-		reg = rtk->regs + WRAP_CTR_REG;
-		val = readl(reg);
-		val &= (~ORI_SUSPEND_MODE);
-		writel(val, reg);
-		dev_info(dev, "[bug fixed] Kent disable ori suspend mode \n");
-
-		reg = rtk->regs + WRAP_BC_CTL_REG;
-		val = readl(reg);
-		val |= HOST_POWER_CHARGE_EN;
-		val |= HOST_VDN_SRC_EN | HOST_IDP_SINK_EN;
-
-		writel(val, reg);
-		dev_info(dev, "[bug fixed] Kent A00: add workaround to disable bc module");
-
-		reg = rtk->regs + WRAP_DUMMY0_REG;
-		val = readl(reg);
-
-		dev_info(dev, "Kent WRAP_DUMMY0_REG=%x", val);
-		/*auto invert clk */
-		val |= AUTO_INVERT_EN | AUTO_INVERT_SETTING;
-		writel(val, reg);
-
-		dev_info(dev, "Kent WRAP_DUMMY0_REG=%x", readl(reg));
-	}
-
-	if (soc_device_match(rtk_soc_kent_big_pkg)) {
-		int u2port_num;
-
-		reg = rtk->regs + WRAP_USB_HMAC_CTR0_REG;
-		val = readl(reg);
-
-		u2port_num = U2PORT_NUM(val);
-
-		/* For rtd1861B, we disable port3 and port4 (usb1 phy0 and phy2) */
-		if (u2port_num > 1) {
-			reg = rtk->regs + WRAP_USB_HMAC_CTR0_REG;
-			val = readl(reg);
-			val |= U2PORT_DIS_P2;
-			writel(val, reg);
-
-			reg = rtk->regs + WRAP_USB2_SPD_CTR_REG;
-			val = readl(reg);
-			val |= P1_UTMI_CLK_SEL;
-			writel(val, reg);
-
-			dev_info(dev, "Kent Big Package disable port3 and port4\n");
-		}
-	}
 	/* Set phy Dp/Dm initial state to host mode to avoid the Dp glitch */
 	reg = rtk->regs + WRAP_USB2_PHY_REG;
 	val = ~USB2_PHY_SWITCH_MASK & readl(reg);
@@ -547,13 +456,7 @@ static void dwc3_rtk_shutdown(struct platform_device *pdev)
 {
 	struct dwc3_rtk *rtk = platform_get_drvdata(pdev);
 
-	rtk->dwc = NULL;
-
-	dwc3_rtk_remove_role_switch(rtk);
-
 	of_platform_depopulate(rtk->dev);
-
-	dwc3_rtk_debug_driver_remove(rtk);
 }
 
 static const struct of_device_id rtk_dwc3_match[] = {

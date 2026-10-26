@@ -2,19 +2,38 @@
 /**
  * dwc3-rtk-debugfs.c - Reltek DesignWare USB3 DRD Controller DebugFS file
  *
- * Copyright (C) 2020 Realtek Semiconductor Corporation
+ * Copyright (C) 2023 Realtek Semiconductor Corporation
  *
  */
 
+#include <linux/platform_device.h>
 #include <linux/spinlock.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 #include <linux/of_address.h>
 #include <linux/module.h>
 
-#include "dwc3-rtk.h"
 #include "core.h"
 #include "io.h"
+
+struct dwc3_rtk_debug {
+	struct device *dev;
+
+	struct device *wrap;
+	u64 regs_addr;
+	size_t regs_size;
+	u64 regs_pm_addr;
+	size_t regs_pm_size;
+
+	u64 regs_dwc;
+	size_t regs_dwc_size;
+
+	struct dentry *debug_dir;
+
+	void *dwc3_regs_dump;
+	void *wrap_regs_dump;
+	void *wrap_pm_regs_dump;
+};
 
 #ifdef CONFIG_DEBUG_FS
 
@@ -295,28 +314,44 @@ static const struct rtk_debugfs_reg32 dwc3_regs[] = {
 	.offset	= WRAP_ ##nm,				\
 }
 
+#define dump_wrap_pm_register(nm)				\
+{							\
+	.name	= __stringify(nm) " [" __stringify(WRAP_PM_ ##nm) "]", \
+	.offset	= WRAP_PM_ ##nm,				\
+}
+
+#define WRAP_CTR_REG  0x0
+#define WRAP_USB2_PHY_UTMI_REG 0x8
+#define WRAP_PHY_PIPE_REG 0xC
+#define WRAP_USB_HMAC_CTR0_REG 0x60
+#define WRAP_USB2_PHY_REG  0x70
+#define WRAP_APHY_REG 0x128
+#define WRAP_PM_USB_DBUS_PWR_CTRL_REG 0x0
+
 static const struct rtk_debugfs_reg32 wrap_regs[] = {
-	dump_wrap_register(CTR_reg),
-	dump_wrap_register(USB_HMAC_CTR0_reg),
-	dump_wrap_register(USB2_PHY_reg),
+	dump_wrap_register(CTR_REG),
+	dump_wrap_register(USB2_PHY_UTMI_REG),
+	dump_wrap_register(USB_HMAC_CTR0_REG),
+	dump_wrap_register(USB2_PHY_REG),
+	dump_wrap_register(APHY_REG),
+};
+
+static const struct rtk_debugfs_reg32 wrap_pm_regs[] = {
+	dump_wrap_pm_register(USB_DBUS_PWR_CTRL_REG),
 };
 
 static int dwc3_rtk_dwc_regdump_show(struct seq_file *s, void *unused)
 {
-	struct dwc3_rtk		*dwc3_rtk = s->private;
-	struct dwc3		*dwc;
-	unsigned long		flags;
-	struct rtk_debugfs_reg32 *regs =
-		    (struct rtk_debugfs_reg32 *)(dwc3_rtk->dwc3_regs_dump);
+	struct dwc3_rtk_debug *rtk = s->private;
+	struct rtk_debugfs_reg32 *regs = (struct rtk_debugfs_reg32 *)(rtk->dwc3_regs_dump);
 	u32 nregs = ARRAY_SIZE(dwc3_regs);
+	void __iomem *base;
 	int i;
 
-	dwc = dwc3_rtk->dwc;
-
-	spin_lock_irqsave(&dwc->lock, flags);
+	base = ioremap(rtk->regs_dwc, rtk->regs_dwc_size);
 
 	for (i = 0; i < nregs; i++, regs++) {
-		u32 val = dwc3_readl(dwc->regs, regs->offset);
+		u32 val = dwc3_readl(base, regs->offset);
 
 		seq_printf(s, "%s = 0x%08x -> 0x%08x (diff=0x%08x)\n",
 			    regs->name,
@@ -325,7 +360,7 @@ static int dwc3_rtk_dwc_regdump_show(struct seq_file *s, void *unused)
 			break;
 	}
 
-	spin_unlock_irqrestore(&dwc->lock, flags);
+	iounmap(base);
 
 	return 0;
 }
@@ -344,14 +379,18 @@ static const struct file_operations dwc3_rtk_dwc_regdump_fops = {
 
 static int dwc3_rtk_wrap_regdump_show(struct seq_file *s, void *unused)
 {
-	struct dwc3_rtk		*dwc3_rtk = s->private;
-	struct rtk_debugfs_reg32 *regs =
-		    (struct rtk_debugfs_reg32 *)(dwc3_rtk->wrap_regs_dump);
-	u32 nregs = ARRAY_SIZE(wrap_regs);
+	struct dwc3_rtk_debug *rtk = s->private;
+	struct rtk_debugfs_reg32 *regs;
+	u32 nregs;
+	void __iomem *base;
 	int i;
 
+	base = ioremap(rtk->regs_addr, rtk->regs_size);
+
+	regs = (struct rtk_debugfs_reg32 *)(rtk->wrap_regs_dump);
+	nregs = ARRAY_SIZE(wrap_regs);
 	for (i = 0; i < nregs; i++, regs++) {
-		u32 val = readl(dwc3_rtk->regs + regs->offset);
+		u32 val = readl(base + regs->offset);
 
 		seq_printf(s, "%s = 0x%08x -> 0x%08x (diff=0x%08x)\n",
 			    regs->name,
@@ -359,6 +398,21 @@ static int dwc3_rtk_wrap_regdump_show(struct seq_file *s, void *unused)
 		if (seq_has_overflowed(s))
 			break;
 	}
+	iounmap(base);
+
+	base = ioremap(rtk->regs_pm_addr, rtk->regs_pm_size);
+	regs = (struct rtk_debugfs_reg32 *)(rtk->wrap_pm_regs_dump);
+	nregs = ARRAY_SIZE(wrap_pm_regs);
+	for (i = 0; i < nregs; i++, regs++) {
+		u32 val = readl(base + regs->offset);
+
+		seq_printf(s, "%s = 0x%08x -> 0x%08x (diff=0x%08x)\n",
+			    regs->name,
+			    regs->default_val, val, regs->default_val ^ val);
+		if (seq_has_overflowed(s))
+			break;
+	}
+	iounmap(base);
 
 	return 0;
 }
@@ -375,35 +429,22 @@ static const struct file_operations dwc3_rtk_wrap_regdump_fops = {
 	.release		= single_release,
 };
 
-void dwc3_rtk_regdump_init(struct dwc3_rtk *dwc3_rtk)
+void dwc3_rtk_regdump_init(struct dwc3_rtk_debug *rtk)
 {
 	struct device		*dev;
 	struct device_node	*node;
 	struct device_node	*dwc3_node;
 	u32	global_regs_starting_offset = DWC3_GLOBALS_REGS_START;
 
-	if (!dwc3_rtk) {
-		pr_err("%s: No device for dwc3_rtk!\n", __func__);
-		return;
-	}
-
-	dev = dwc3_rtk->dev;
-	if (!dev) {
-		pr_err("%s: No device for dwc3_rtk!\n", __func__);
-		return;
-	}
-
+	dev = rtk->wrap;
 	node = dev->of_node;
-	if (!node) {
-		pr_err("%s: No device node for dwc3_rtk!\n", __func__);
-		return;
-	}
+
 	if (of_device_is_compatible(node, "realtek,rtd-dwc3"))
 		global_regs_starting_offset = DWC3_RTK_RTD_GLOBALS_REGS_START;
 
-	dwc3_node = of_get_compatible_child(node, "synopsys,dwc3");
+	dwc3_node = of_get_compatible_child(node, "snps,dwc3");
 	if (!dwc3_node) {
-		dev_info(dev, "%s: Get dwc3_node at first child node\n",
+		dev_info(rtk->dev, "%s: Get dwc3_node at first child node\n",
 			    __func__);
 		dwc3_node = of_get_next_child(node, NULL);
 	}
@@ -412,23 +453,19 @@ void dwc3_rtk_regdump_init(struct dwc3_rtk *dwc3_rtk)
 		u64		addr;
 		u64		size;
 		unsigned int	flags;
-		u32		fixed_dwc3_globals_regs_start = 0;
 		struct rtk_debugfs_reg32 *regs;
 		size_t regs_size = ARRAY_SIZE(dwc3_regs);
 		void __iomem *base;
 		int i;
 
-		dwc3_rtk->dwc3_regs_dump = kzalloc(
-			    sizeof(struct rtk_debugfs_reg32) * regs_size,
-			    GFP_KERNEL);
-		regs = (struct rtk_debugfs_reg32 *)(dwc3_rtk->dwc3_regs_dump);
-		memcpy(regs, dwc3_regs,
-			    sizeof(struct rtk_debugfs_reg32) * regs_size);
+		rtk->dwc3_regs_dump = kzalloc(
+			    sizeof(struct rtk_debugfs_reg32) * regs_size, GFP_KERNEL);
+		regs = (struct rtk_debugfs_reg32 *)(rtk->dwc3_regs_dump);
+		memcpy(regs, dwc3_regs, sizeof(struct rtk_debugfs_reg32) * regs_size);
 
 		addrp = of_get_address(dwc3_node, 0, &size, &flags);
 		if (addrp == NULL) {
-			dev_err(dev, "%s: Error! Can't get dwc3 reg address!\n",
-				    __func__);
+			dev_err(rtk->dev, "%s: Error! Can't get dwc3 reg address!\n", __func__);
 			return;
 		}
 		addr = of_translate_address(dwc3_node, addrp);
@@ -436,18 +473,11 @@ void dwc3_rtk_regdump_init(struct dwc3_rtk *dwc3_rtk)
 		addr += global_regs_starting_offset;
 		size -= global_regs_starting_offset;
 
-		of_property_read_u32(dwc3_node,
-			    "snps,fixed_dwc3_globals_regs_start",
-			    &fixed_dwc3_globals_regs_start);
-		if (fixed_dwc3_globals_regs_start) {
-			addr -= global_regs_starting_offset;
-			size += global_regs_starting_offset;
+		rtk->regs_dwc = addr;
+		rtk->regs_dwc_size = size;
 
-			addr += fixed_dwc3_globals_regs_start;
-			size -= fixed_dwc3_globals_regs_start;
-		}
-		dev_dbg(dev, "dwc3 register start address to 0x%x (size=%x)\n",
-			    (u32)addr, (u32)size);
+		dev_dbg(rtk->dev, "dwc3 register start address to 0x%x (size=%x)\n",
+			(u32)addr, (u32)size);
 
 		base = ioremap(addr, size);
 
@@ -457,85 +487,157 @@ void dwc3_rtk_regdump_init(struct dwc3_rtk *dwc3_rtk)
 		iounmap(base);
 	}
 
-	if (dwc3_rtk) {
+	if (node) {
+		const __be32	*addrp;
+		u64		addr;
+		u64		size;
+		unsigned int	flags;
+		void __iomem *base;
 		struct rtk_debugfs_reg32 *regs;
-		size_t regs_size = ARRAY_SIZE(wrap_regs);
+		size_t regs_size;
 		int i;
 
-		dwc3_rtk->wrap_regs_dump = kzalloc(
-			    sizeof(struct rtk_debugfs_reg32) * regs_size,
-			   GFP_KERNEL);
-		regs = (struct rtk_debugfs_reg32 *)(dwc3_rtk->wrap_regs_dump);
-		memcpy(regs, wrap_regs,
-			    sizeof(struct rtk_debugfs_reg32) * regs_size);
+		addrp = of_get_address(node, 0, &size, &flags);
+		if (addrp == NULL) {
+			dev_err(rtk->dev, "%s: Error! Can't get wrap reg address!\n", __func__);
+			return;
+		}
+		addr = of_translate_address(node, addrp);
+
+		dev_dbg(rtk->dev, "wrapper register start address to 0x%x (size=%x)\n",
+			(u32)addr, (u32)size);
+
+		rtk->regs_addr = addr;
+		rtk->regs_size = size;
+
+		base = ioremap(addr, size);
+
+		regs_size = ARRAY_SIZE(wrap_regs);
+		rtk->wrap_regs_dump = kzalloc(
+			    sizeof(struct rtk_debugfs_reg32) * regs_size, GFP_KERNEL);
+		regs = (struct rtk_debugfs_reg32 *)(rtk->wrap_regs_dump);
+		memcpy(regs, wrap_regs, sizeof(struct rtk_debugfs_reg32) * regs_size);
 
 		for (i = 0; i < regs_size; i++, regs++)
-			regs->default_val = readl(dwc3_rtk->regs +
-			    regs->offset);
+			regs->default_val = readl(base + regs->offset);
+
+		iounmap(base);
+
+		addrp = of_get_address(node, 1, &size, &flags);
+		if (addrp == NULL) {
+			dev_err(rtk->dev, "%s: Error! Can't get wrap pm reg address!\n", __func__);
+			return;
+		}
+		addr = of_translate_address(node, addrp);
+
+		dev_dbg(rtk->dev, "wrapper pm register start address to 0x%x (size=%x)\n",
+			(u32)addr, (u32)size);
+
+		rtk->regs_pm_addr = addr;
+		rtk->regs_pm_size = size;
+
+		base = ioremap(addr, size);
+
+		regs_size = ARRAY_SIZE(wrap_pm_regs);
+		rtk->wrap_pm_regs_dump = kzalloc(
+			    sizeof(struct rtk_debugfs_reg32) * regs_size, GFP_KERNEL);
+		regs = (struct rtk_debugfs_reg32 *)(rtk->wrap_pm_regs_dump);
+		memcpy(regs, wrap_pm_regs, sizeof(struct rtk_debugfs_reg32) * regs_size);
+
+		for (i = 0; i < regs_size; i++, regs++)
+			regs->default_val = readl(base + regs->offset);
+
+		iounmap(base);
 	}
 }
 
-void dwc3_rtk_debugfs_init(struct dwc3_rtk *dwc3_rtk)
+void dwc3_rtk_debugfs_init(struct dwc3_rtk_debug *rtk)
 {
-	struct dentry		*debug_dir;
-	struct dentry		*file;
-	struct device		*dev;
+	struct dentry *debug_dir;
+	struct dentry *file;
+	struct device *dev;
 
-	if (!dwc3_rtk) {
-		pr_err("%s: No device for dwc3_rtk!\n", __func__);
-		return;
-	}
+	dev = rtk->wrap;
 
-	dev = dwc3_rtk->dev;
-	if (!dev) {
-		pr_err("%s: No device for dwc3_rtk!\n", __func__);
-		return;
-	}
+	dev_info(rtk->dev, "%s for dev=%s\n", __func__, dev_name(dev));
 
-	dwc3_rtk_regdump_init(dwc3_rtk);
+	dwc3_rtk_regdump_init(rtk);
 
 	debug_dir = debugfs_create_dir(dev_name(dev), usb_debug_root);
-	if (!debug_dir) {
-		dev_err(dev, "%s: Can't create debugfs dir\n", __func__);
-		return;
-	}
-	dwc3_rtk->debug_dir = debug_dir;
+	rtk->debug_dir = debug_dir;
 
-	file = debugfs_create_file("dwc3_regdump", S_IRUGO,
-		    debug_dir, dwc3_rtk, &dwc3_rtk_dwc_regdump_fops);
-	if (!file)
-		dev_err(dev, "%s: Can't create debugfs regdump\n", __func__);
-
-	file = debugfs_create_file("wrap_regdump", S_IRUGO,
-		    debug_dir, dwc3_rtk, &dwc3_rtk_wrap_regdump_fops);
-	if (!file)
-		dev_err(dev, "%s: Can't create debugfs regdump\n", __func__);
+	if (rtk->regs_dwc)
+		file = debugfs_create_file("dwc3_regdump", S_IRUGO, debug_dir, rtk,
+				   &dwc3_rtk_dwc_regdump_fops);
+	file = debugfs_create_file("wrap_regdump", S_IRUGO, debug_dir, rtk,
+				   &dwc3_rtk_wrap_regdump_fops);
 }
-EXPORT_SYMBOL(dwc3_rtk_debugfs_init);
 
-void dwc3_rtk_debugfs_exit(struct dwc3_rtk *dwc3_rtk)
+void dwc3_rtk_debugfs_exit(struct dwc3_rtk_debug *rtk)
 {
-	debugfs_remove_recursive(dwc3_rtk->debug_dir);
+	debugfs_remove_recursive(rtk->debug_dir);
 
-	kfree(dwc3_rtk->dwc3_regs_dump);
-	kfree(dwc3_rtk->wrap_regs_dump);
+	kfree(rtk->dwc3_regs_dump);
+	kfree(rtk->wrap_regs_dump);
+	kfree(rtk->wrap_pm_regs_dump);
 }
-EXPORT_SYMBOL(dwc3_rtk_debugfs_exit);
 
-MODULE_LICENSE("GPL");
 #else
-void dwc3_rtk_debugfs_init(struct dwc3_rtk *dwc3_rtk)
+void dwc3_rtk_debugfs_init(struct dwc3_rtk_debug *rtk)
 {
 
 }
-EXPORT_SYMBOL(dwc3_rtk_debugfs_init);
 
-void dwc3_rtk_debugfs_exit(struct dwc3_rtk *dwc3_rtk)
+void dwc3_rtk_debugfs_exit(struct dwc3_rtk_debug *rtk)
 {
 
 }
-EXPORT_SYMBOL(dwc3_rtk_debugfs_exit);
+
 #endif /* CONFIG_DEBUG_FS */
 
-MODULE_LICENSE("GPL");
+static int dwc3_rtk_debug_probe(struct platform_device *pdev)
+{
+	struct dwc3_rtk_debug *rtk;
+	struct device *dev = &pdev->dev;
+	int ret = 0;
 
+	rtk = devm_kzalloc(dev, sizeof(*rtk), GFP_KERNEL);
+	if (!rtk) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	platform_set_drvdata(pdev, rtk);
+
+	rtk->dev = dev;
+	rtk->wrap = dev->parent;
+
+	dwc3_rtk_debugfs_init(rtk);
+
+out:
+	return ret;
+}
+
+static int dwc3_rtk_debug_remove(struct platform_device *pdev)
+{
+	struct dwc3_rtk_debug *rtk = platform_get_drvdata(pdev);
+
+	dwc3_rtk_debugfs_exit(rtk);
+
+	return 0;
+}
+
+static struct platform_driver dwc3_rtk_debug_driver = {
+	.probe		= dwc3_rtk_debug_probe,
+	.remove		= dwc3_rtk_debug_remove,
+	.driver		= {
+		.name	= "rtk-dwc3-debug",
+	},
+};
+
+module_platform_driver(dwc3_rtk_debug_driver);
+
+MODULE_AUTHOR("Stanley Chang <stanley_chang@realtek.com>");
+MODULE_DESCRIPTION("DesignWare USB3 Realtek Debug Driver");
+MODULE_ALIAS("platform:rtk-dwc3-debug");
+MODULE_LICENSE("GPL");
