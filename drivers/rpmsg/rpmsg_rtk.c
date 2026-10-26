@@ -53,7 +53,7 @@
 #define RPC_INT_AS BIT(1)
 #define RPC_INT_VS BIT(2)
 #define RPC_INT_SV BIT(2)
-#define RPC_INT_SVE3 BIT(0)
+#define RPC_INT_SVE3 BIT(1)
 #define RPC_INT_VE3S BIT(4)
 #define RPC_INT_HS BIT(4)
 #define RPC_INT_SH BIT(4)
@@ -84,6 +84,8 @@
 
 #define rpc_ringbuf_phys 0x40ff000
 extern void __iomem *rpc_ringbuf_base;
+static int recovery;
+module_param(recovery, int, 0444);
 
 #define ringbuf_phys_to_virt(x) (x - rpc_ringbuf_phys + rpc_ringbuf_base)
 
@@ -176,10 +178,8 @@ struct rtk_rcpu {
 	const struct remote_cpu_info *info;
 	volatile uint32_t *rcpu_notify;
 	volatile uint32_t *sync_flag;
-	bool skip_handshake;
 	int status;
 	struct rtk_rpmsg_device *rtk_rpdev;
-	struct rproc *rproc;
 };
 
 struct rtk_rpmsg_device {
@@ -394,7 +394,6 @@ void handle_intr_data(unsigned long data)
 	case VIDEO_AGENT:
 	case VENC_AGENT:
 	case HIFI_AGENT:
-	case KR4_AGENT:
 		pid = rpc.sysPID;
 		break;
 	case REPLYID:
@@ -524,7 +523,6 @@ void handle_kern_data(unsigned long data)
 	case VIDEO_AGENT:
 	case VENC_AGENT:
 	case HIFI_AGENT:
-	case KR4_AGENT:
 		pid = rpc.sysPID;
 		break;
 	case REPLYID:
@@ -685,7 +683,7 @@ static int __rtk_rpmsg_send(struct rtk_rpmsg_channel *channel, const void *data,
 	volatile uint32_t *ringIn, *ringOut, *ringStart, *ringEnd;
 	uint32_t in, out;
 
-	if (channel->rcpu->status == IS_DISCONNECTED) {
+	if (channel->rcpu->status == IS_DISABLED) {
 		dev_err(channel->rcpu->dev, "cannot send rpc, remote cpu init failed\n");
 		return -EINVAL;
 	}
@@ -761,10 +759,7 @@ out:
 
 void rcpu_set_flag(struct rtk_rcpu *rcpu, uint32_t flag)
 {
-	if (rcpu->info->big_endian)
-		writel(__cpu_to_be32(flag), rcpu->sync_flag);
-	else
-		writel(flag, rcpu->sync_flag);
+	writel(__cpu_to_be32(flag), rcpu->sync_flag);
 }
 
 uint32_t rcpu_get_flag(struct rtk_rcpu *rcpu)
@@ -789,14 +784,8 @@ uint32_t rcpu_get_flag(struct rtk_rcpu *rcpu)
 static int rtk_kick_rcpu(struct rtk_rcpu *rcpu)
 {
 	int timeout = 3000;
-	uint32_t intr_en_reg;
 
-	if (rcpu->info->id == VE3_ID) {
-		regmap_read(rcpu->rcpu_intr_regmap, RPC_INT_VE3_REG, &intr_en_reg);
-		regmap_write(rcpu->rcpu_intr_regmap, RPC_INT_VE3_REG, rcpu->info->intr_en | intr_en_reg);
-	} else {
-		regmap_write(rcpu->rcpu_intr_regmap, RPC_SB2_INT_EN, rcpu->info->intr_en | RPC_INT_WRITE_EN);
-	}
+	regmap_write(rcpu->rcpu_intr_regmap, RPC_SB2_INT_EN, rcpu->info->intr_en | RPC_INT_WRITE_EN);
 
 	if (rcpu->rcpu_notify)
 		RPC_SET_BIT(rcpu->rcpu_notify, rcpu->info->to_rcpu_notify_bit);
@@ -804,9 +793,7 @@ static int rtk_kick_rcpu(struct rtk_rcpu *rcpu)
 	rcpu_set_flag(rcpu, 0xffffffff);
 	rcpu->info->send_interrupt(rcpu);
 
-	if (rcpu->skip_handshake) {
-		dev_dbg(rcpu->dev, "skip the handshake check\n");
-		rcpu->status = IS_CONNECTED;
+	if (rcpu->status == IS_DISABLED) {
 		return 0;
 	}
 
@@ -1038,7 +1025,7 @@ static int rtk_rpc_create_deivce(struct rtk_rpmsg_channel *channel, struct devic
 	channel->rtk_rpdev = rtk_rpdev;
 
 	rpdev = &rtk_rpdev->rpdev;
-	strscpy(rpdev->id.name, channel->name, RPMSG_NAME_SIZE);
+	strncpy(rpdev->id.name, channel->name, RPMSG_NAME_SIZE);
 	rpdev->src = RPMSG_ADDR_ANY;
 	rpdev->dst = RPMSG_ADDR_ANY;
 
@@ -1241,7 +1228,7 @@ static struct rtk_rpmsg_channel *rtk_rpc_create_channel(struct device_node *node
 	spin_lock_init(&channel->list_lock);
 
 	channel->id = rcpu->info->id;
-	strscpy(channel->name, name, RPMSG_NAME_SIZE);
+	strncpy(channel->name, name, RPMSG_NAME_SIZE);
 	channel->tx_fifo = ringbuf_phys_to_virt(tx_fifo);
 	channel->rx_fifo = ringbuf_phys_to_virt(rx_fifo);
 
@@ -1326,20 +1313,25 @@ static int rcpu_rpmsg_init(struct rtk_rcpu *rcpu)
 		rcpu->rcpu_notify = &ipc->vo_int_sync;
 		rcpu->sync_flag = &ipc->audio_rpc_flag;
 	} else if (rcpu->info->id == VIDEO_ID) {
+		if (recovery)
+			rcpu->status = IS_DISABLED;
 		rcpu->rcpu_notify = &ipc->video_int_sync;
 		rcpu->sync_flag = &ipc->video_rpc_flag;
 	} else if (rcpu->info->id == VE3_ID) {
+		if (recovery)
+			rcpu->status = IS_DISABLED;
 		rcpu->rcpu_notify = &ipc->ve3_int_sync;
 		rcpu->sync_flag = &ipc->ve3_rpc_flag;
 	} else if (rcpu->info->id == HIFI_ID) {
+		if (recovery)
+			rcpu->status = IS_DISABLED;
 		rcpu->rcpu_notify = 0;
 		rcpu->sync_flag = &ipc->hifi_rpc_flag;
 	}  else if (rcpu->info->id == HIFI1_ID) {
+		if (recovery)
+			rcpu->status = IS_DISABLED;
 		rcpu->rcpu_notify = 0;
 		rcpu->sync_flag = &ipc->hifi1_rpc_flag;
-	}  else if (rcpu->info->id == KR4_ID) {
-		rcpu->rcpu_notify = 0;
-		rcpu->sync_flag = &ipc->kr4_rpc_flag;
 	}
 
 	syscon_np = of_parse_phandle(rcpu->dev->of_node, "syscon", 0);
@@ -1382,11 +1374,6 @@ static int rcpu_rpmsg_init(struct rtk_rcpu *rcpu)
 	}
 
 	rcpu->irq = irq;
-
-	if (of_find_property(rcpu->dev->of_node, "skip-handshake", NULL))
-		rcpu->skip_handshake = true;
-	else
-		rcpu->skip_handshake = false;
 
 	rpmsg_dir = debugfs_lookup("rpmsg", NULL);
 	if (!rpmsg_dir)
@@ -1499,51 +1486,11 @@ void rtk_dump_all_ringbuf_info(struct device *dev)
 }
 EXPORT_SYMBOL(rtk_dump_all_ringbuf_info);
 
-struct rproc *check_rproc_state(struct device *dev)
-{
-	struct rproc *rproc;
-	phandle phandle;
-	struct device_node *node;
-
-	if (of_property_read_u32(dev->of_node, "rproc", &phandle)) {
-		dev_dbg(dev, "could not get %s rproc phandle, skipping\n", dev->of_node->name);
-		return 0;
-	}
-
-	node = of_find_node_by_phandle(phandle);
-	if (node) {
-		if (!of_device_is_available(node)) {
-			dev_err(dev, "rproc is disabled, do not probe\n");
-			return ERR_PTR(-ENODEV);
-		}
-	} else {
-		return ERR_PTR(-ENODEV);
-	}
-
-	rproc = rproc_get_by_phandle(phandle);
-	if (!rproc) {
-		dev_err(dev, "could not get %s rproc handle\n", dev->of_node->name);
-		return ERR_PTR(-EPROBE_DEFER);
-	}
-
-	if (rproc->state != RPROC_RUNNING) {
-		dev_dbg(dev, "%s rproc is not ready\n", dev->of_node->name);
-		return ERR_PTR(-EPROBE_DEFER);
-	}
-
-	return rproc;
-}
-
 static int rtk_rcpu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct rtk_rcpu *rcpu;
-	struct rproc *rproc;
 	int ret = 0;
-
-	rproc = check_rproc_state(dev);
-	if (IS_ERR(rproc))
-		return PTR_ERR(rproc);
 
 	rcpu = kzalloc(sizeof(*rcpu), GFP_KERNEL);
 	if (!rcpu)
@@ -1551,7 +1498,6 @@ static int rtk_rcpu_probe(struct platform_device *pdev)
 
 	rcpu->dev = dev;
 	rcpu->info = device_get_match_data(dev);
-	rcpu->rproc = rproc;
 	dev_set_drvdata(dev, rcpu);
 
 	ret = rcpu_rpmsg_init(rcpu);
@@ -1578,8 +1524,7 @@ static int rtk_rcpu_suspend(struct device *dev)
 {
 	struct rtk_rcpu *rcpu = dev_get_drvdata(dev);
 
-	if (!rcpu->rproc)
-		regmap_write(rcpu->rcpu_intr_regmap, RPC_SB2_INT_EN, rcpu->info->intr_en);
+	regmap_write(rcpu->rcpu_intr_regmap, RPC_SB2_INT_EN, rcpu->info->intr_en);
 
 	return 0;
 }
@@ -1589,8 +1534,7 @@ static int rtk_rcpu_resume(struct device *dev)
 
 	struct rtk_rcpu *rcpu = dev_get_drvdata(dev);
 
-	if (!rcpu->rproc)
-		regmap_write(rcpu->rcpu_intr_regmap, RPC_SB2_INT_EN, rcpu->info->intr_en | RPC_INT_WRITE_EN);
+	regmap_write(rcpu->rcpu_intr_regmap, RPC_SB2_INT_EN, rcpu->info->intr_en | RPC_INT_WRITE_EN);
 
 	return 0;
 }
