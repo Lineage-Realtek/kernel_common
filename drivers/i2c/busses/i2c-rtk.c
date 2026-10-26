@@ -6,23 +6,19 @@
  *
  */
 
-#include <linux/arm-smccc.h>
-#include <linux/clk.h>
-#include <linux/completion.h>
-#include <linux/delay.h>
-#include <linux/i2c.h>
-#include <linux/interrupt.h>
 #include <linux/module.h>
-#include <linux/nvmem-consumer.h>
+#include <linux/platform_device.h>
+#include <linux/interrupt.h>
+#include <linux/completion.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
-#include <linux/of_gpio.h>
-#include <linux/of.h>
-#include <linux/pinctrl/consumer.h>
-#include <linux/platform_device.h>
+#include <linux/i2c.h>
+#include <linux/clk.h>
 #include <linux/reset.h>
+#include <linux/delay.h>
+#include <linux/of_gpio.h>
 #include <linux/regmap.h>
-#include <linux/units.h>
 
 #include <linux/arm-smccc.h>
 #include <linux/nvmem-consumer.h>
@@ -146,13 +142,12 @@
 #define RTK_PROCESS_I2C_0_READ	0x8400ff43
 
 #define SDA_DEL_EN
-#define I2C_CLK_SRC		27000 /* unit Khz */
 
 #define IGLOO_CA_TYPE		0x4F
 
-static int ISR_CLR_BIT[] = { 8, 11, 26, 23, 15, 14, 10, 0 };
+static int ISR_CLR_BIT[] = { 8, 11, 26, 23, 15, 14, 10 };
 #ifdef SDA_DEL_EN
-static int SDA_DEL_SHIFT[] = { 0x84, 0x80, 0x80, 0x84, 0x88, 0x8C, 0x90, 0xF0 };
+static int SDA_DEL_SHIFT[] = { 0x84, 0x80, 0x80, 0x84, 0x88, 0x8C, 0xC0 };
 #define I2C_SDA_DEL_MASK	(0x1FF)
 #define I2C_SDA_DEL_EN		(0x00000001<<8)
 #define I2C_SDA_DEL_SEL(x)	((x & 0x1F)) /* Delay time: (unit 518ns)*/
@@ -303,11 +298,6 @@ static int rtk_i2c_set_speed(struct rtk_i2c_dev *priv)
 		}
 	}
 
-	if (priv->timings.scl_rise_ns)
-		div_h = (priv->timings.scl_rise_ns * I2C_CLK_SRC) / MICRO;
-	if (priv->timings.scl_fall_ns)
-		div_l = (priv->timings.scl_fall_ns * I2C_CLK_SRC) / MICRO;
-
 	writel(0, priv->base + I2C_ENABLE);
 
 	if (priv->ca_type == IGLOO_CA_TYPE) {
@@ -405,9 +395,6 @@ static void rtk_i2c_disable(struct rtk_i2c_dev *priv)
 
 static int rtk_i2c_init(struct rtk_i2c_dev *priv)
 {
-	if (priv->adap.nr == 7)
-		writel(BIT(6) | BIT(7), priv->irqbase + 0x90);
-
 	writel(0, priv->base + I2C_ENABLE);
 	writel(0, priv->base + I2C_INTR_MASK);
 
@@ -737,10 +724,10 @@ fail:
 			reset_control_reset(priv->rst);
 		}
 		rtk_i2c_init(priv);
-		dev_dbg(priv->dev, "reset module & reinit\n");
+		dev_err(priv->dev, "reset module & reinit\n");
 	}
 
-	dev_dbg(priv->dev, "transmit error %d 0x%x 0x%x 0x%x\n",
+	dev_err(priv->dev, "transmit error %d 0x%x 0x%x 0x%x\n",
 		priv->msg_err, addr, priv->msg_w_idx, num);
 
 	return priv->msg_err;
@@ -881,8 +868,10 @@ static irqreturn_t rtk_i2c_irq(int this_irq, void *dev_id)
 	enabled = readl(priv->base + I2C_ENABLE);
 	status = readl(priv->base + I2C_INTR_STAT);
 
-	if (!enabled || !(status & ~ACTIVITY))
+	if (!enabled || !(status & ~ACTIVITY)) {
+		dev_err(priv->dev, "IRQ_NONE: 0x%x, 0x%x\n", enabled, status);
 		return IRQ_NONE;
+	}
 
 #if IS_ENABLED(CONFIG_I2C_SLAVE)
 	if (!(readl(priv->base + I2C_CON) & SLAVE_DISABLE)) {
@@ -1150,8 +1139,7 @@ static int rtk_i2c_probe(struct platform_device *pdev)
 
 	reset_control_reset(priv->rst);
 
-	priv->timings.bus_freq_hz = I2C_MAX_STANDARD_MODE_FREQ;
-	i2c_parse_fw_timings(dev, &priv->timings, 0);
+	i2c_parse_fw_timings(dev, &priv->timings, 1);
 
 	priv->adap.timeout = msecs_to_jiffies(250);
 	priv->adap.retries = 5;
