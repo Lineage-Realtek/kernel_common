@@ -29,6 +29,7 @@ struct clk_pll {
 #define CLK_PLL_CONF_NO_POW             0
 #define CLK_PLL_CONF_POW_LOC_CTL2       1
 #define CLK_PLL_CONF_POW_LOC_CTL3       2
+
 	u32 pow_set_rs : 1;
 	u32 pow_set_pi_bps : 1;
 	u32 pow_set_analog : 1;
@@ -36,6 +37,8 @@ struct clk_pll {
 	u32 rs_val;
 	u32 analog_mask;
 	u32 analog_val;
+
+	spinlock_t *lock;
 
 	u32 flags;
 };
@@ -61,6 +64,21 @@ static inline bool clk_pll_has_pow(struct clk_pll *pll)
 	if (pll->pow_loc != CLK_PLL_CONF_NO_POW)
 		return true;
 	return false;
+}
+
+static inline unsigned long clk_pll_lock(struct clk_pll *pll)
+{
+	unsigned long flags = 0;
+
+	if (pll->lock)
+		spin_lock_irqsave(pll->lock, flags);
+	return flags;
+}
+
+static inline void clk_pll_unlock(struct clk_pll *pll, unsigned long flags)
+{
+	if (pll->lock)
+		spin_unlock_irqrestore(pll->lock, flags);
 }
 
 struct clk_pll_div {
@@ -170,5 +188,8 @@ extern const struct clk_ops clk_pll_dif_v2_ops;
 extern const struct clk_ops clk_pll_mmc_ops;
 extern const struct clk_ops clk_pll_mmc_v2_ops;
 extern const struct clk_ops clk_pll_mmc_phase_ops;
+extern const struct clk_ops clk_pll_sd_ops;
+extern const struct clk_ops clk_pll_sd_v2_ops;
+extern const struct clk_ops clk_pll_sd_phase_ops;
 
 #endif /* __CLK_REALTEK_CLK_PLL_H */

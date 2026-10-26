@@ -46,12 +46,47 @@ EXPORT_SYMBOL_GPL(clk_regmap_update_bits);
 
 struct rtk_clk_drvdata {
 	const struct rtk_clk_desc *desc;
+	void __iomem *base;
 	struct regmap *regmap;
+};
+
+static const struct regmap_config default_regmap_config = {
+	.reg_bits       = 32,
+	.reg_stride     = 4,
+	.val_bits       = 32,
+	.fast_io        = true,
+	.max_register   = 0xffc,
 };
 
 static int rtk_clk_setup_map(struct platform_device *pdev, struct rtk_clk_drvdata *data)
 {
-	data->regmap = device_node_to_regmap(pdev->dev.of_node);
+	struct device *dev = &pdev->dev;
+	struct regmap_config config = default_regmap_config;
+	struct resource *res;
+	int ret;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -EINVAL;
+
+	data->base = devm_ioremap(dev, res->start, resource_size(res));
+	if (!data->base)
+		return -ENOMEM;
+
+	ret = of_hwspin_lock_get_id(dev->of_node, 0);
+	if (ret >= 0) {
+		config.use_hwlock = true;
+		config.hwlock_id = ret;
+		config.hwlock_mode = HWLOCK_IRQSTATE;
+	} else if (ret == -EPROBE_DEFER) {
+		return ret;
+	} else if (ret != -ENOENT) {
+		pr_err("Failed to retrieve valid hwlock: %d\n", ret);
+		return ret;
+	}
+
+	config.max_register = resource_size(res) - 4;
+	data->regmap = devm_regmap_init_mmio(dev, data->base, &config);
 	return PTR_ERR_OR_ZERO(data->regmap);
 }
 

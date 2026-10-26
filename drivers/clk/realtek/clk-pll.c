@@ -13,31 +13,12 @@
 #include "common.h"
 #include "clk-pll.h"
 
-static DEFINE_SPINLOCK(pll_reg_lock);
-
-static inline unsigned long clk_pll_lock(struct clk_pll *pll)
-	__acquires(pll_reg_lock)
-{
-	unsigned long flags = 0;
-
-	spin_lock_irqsave(&pll_reg_lock, flags);
-	return flags;
-}
-
-static inline void clk_pll_unlock(struct clk_pll *pll, unsigned long flags)
-	__releases(pll_reg_lock)
-{
-	spin_unlock_irqrestore(&pll_reg_lock, flags);
-}
-
 static inline int __clk_pll_get_pow(struct clk_pll *clkp);
 
 static inline int __clk_pll_set_oc_en(struct clk_pll *clkp)
 {
 	u32 val;
 	u32 pollval;
-
-	lockdep_assert_held(&pll_reg_lock);
 
 	val = clk_regmap_read(&clkp->clkr, clkp->ssc_ofs + 0x0);
 	if ((val & 0x7) == 0x5)
@@ -52,8 +33,6 @@ static inline int __clk_pll_set_pow_on_common(struct clk_pll *clkp)
 {
 	struct clk_regmap *clkr = &clkp->clkr;
 	u32 pow = clk_pll_get_pow_offset(clkp);
-
-	lockdep_assert_held(&pll_reg_lock);
 
 	if (clkp->pow_set_rs)
 		clk_regmap_update_bits(clkr, clkp->pll_ofs, clkp->rs_mask, clkp->rs_val);
@@ -80,8 +59,6 @@ static inline int __clk_pll_set_pow_on_mno_v2(struct clk_pll *clkp)
 	u32 pow = clk_pll_get_pow_offset(clkp);
 	u32 val = 0, mask = 0;
 
-	lockdep_assert_held(&pll_reg_lock);
-
 	clk_regmap_update_bits(clkr, clkp->pll_ofs + pow, 0x7, 0x5);
 	clk_regmap_update_bits(clkr, clkp->pll_ofs + pow, 0x7, 0x7);
 
@@ -106,8 +83,6 @@ static inline int __clk_pll_set_pow_on_mno_v2(struct clk_pll *clkp)
 
 static inline int __clk_pll_set_pow_on(struct clk_pll *clkp)
 {
-	lockdep_assert_held(&pll_reg_lock);
-
 	/* already powered */
 	if (__clk_pll_get_pow(clkp) > 0)
 		return 0;
@@ -122,8 +97,6 @@ static inline int __clk_pll_set_pow_off(struct clk_pll *clkp)
 {
 	struct clk_regmap *clkr = &clkp->clkr;
 	u32 pow = clk_pll_get_pow_offset(clkp);
-
-	lockdep_assert_held(&pll_reg_lock);
 
 	clk_regmap_update_bits(clkr, clkp->pll_ofs + pow, 0x7, 0x4);
 	if (clkp->pll_type != CLK_PLL_TYPE_NF_SSC)
@@ -142,8 +115,6 @@ static inline int __clk_pll_get_pow(struct clk_pll *clkp)
 	if (!clk_pll_has_pow(clkp))
 		return -EINVAL;
 
-	lockdep_assert_held(&pll_reg_lock);
-
 	pow = clk_pll_get_pow_offset(clkp);
 	val = clk_regmap_read(&clkp->clkr, clkp->pll_ofs + pow);
 	return !!(val & 0x1);
@@ -152,8 +123,6 @@ static inline int __clk_pll_get_pow(struct clk_pll *clkp)
 static u32 __clk_pll_freq_raw_get(struct clk_pll *clkp)
 {
 	u32 val = 0;
-
-	lockdep_assert_held(&pll_reg_lock);
 
 	switch (clkp->pll_type) {
 	case CLK_PLL_TYPE_MNO_V2:
@@ -184,8 +153,6 @@ static inline int __clk_pll_freq_set(struct clk_pll *clkp, u32 val)
 {
 	int ret = 0;
 	u32 mask = clk_pll_get_freq_mask(clkp);
-
-	lockdep_assert_held(&pll_reg_lock);
 
 	switch (clkp->pll_type) {
 	case CLK_PLL_TYPE_MNO:
@@ -239,14 +206,11 @@ static int clk_pll_enable(struct clk_hw *hw)
 {
 	struct clk_pll *clkp = to_clk_pll(hw);
 	int ret = 0;
-	unsigned long flags;
 
-	flags = clk_pll_lock(clkp);
 	if (clk_pll_has_pow(clkp))
 		ret = __clk_pll_set_pow_on(clkp);
 	if (ret)
 		pr_warn("%pC: error in %s: %d\n", hw->clk, __func__, ret);
-	clk_pll_unlock(clkp, flags);
 	return 0;
 }
 
@@ -254,14 +218,11 @@ static void clk_pll_disable(struct clk_hw *hw)
 {
 	struct clk_pll *clkp = to_clk_pll(hw);
 	int ret = 0;
-	unsigned long flags;
 
-	flags = clk_pll_lock(clkp);
 	if (clk_pll_has_pow(clkp))
 		ret = __clk_pll_set_pow_off(clkp);
 	if (ret)
 		pr_warn("%pC: error in %s: %d\n", hw->clk, __func__, ret);
-	clk_pll_unlock(clkp, flags);
 }
 
 static void clk_pll_disable_unused(struct clk_hw *hw)
@@ -273,13 +234,8 @@ static void clk_pll_disable_unused(struct clk_hw *hw)
 static int clk_pll_is_enabled(struct clk_hw *hw)
 {
 	struct clk_pll *clkp = to_clk_pll(hw);
-	int ret;
-	unsigned long flags;
 
-	flags = clk_pll_lock(clkp);
-	ret = __clk_pll_get_pow(clkp);
-	clk_pll_unlock(clkp, flags);
-	return ret;
+	return __clk_pll_get_pow(clkp);
 }
 
 static long clk_pll_round_rate(struct clk_hw *hw, unsigned long rate,

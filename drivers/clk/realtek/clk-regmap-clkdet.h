@@ -15,10 +15,6 @@ struct clk_regmap_clkdet {
 	struct clk_regmap clkr;
 	int ofs;
 	int type;
-	const char *const *output_sel;
-	int n_output_sel;
-	u32 reg_output_sel;
-	u32 mask_output_sel;
 };
 
 #define to_clk_regmap_clkdet(_hw) container_of(_hw, struct clk_regmap_clkdet, clkr.hw)
