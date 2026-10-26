@@ -46,7 +46,7 @@
 #include <linux/regmap.h>
 #include <soc/realtek/rtk_pm.h>
 
-#define RTL8169_VERSION "1.5.16"
+#define RTL8169_VERSION "1.5.15"
 #define MODULENAME "r8169"
 #define PFX MODULENAME ": "
 #define CURRENT_MDIO_PAGE 0xFFFFFFFF
@@ -991,7 +991,6 @@ struct rtl8169_private {
 
 	struct rtl8169_storm_ctrl sc[3];
 	u32 status;
-	u8 mac_addr[ETH_ALEN];
 };
 
 #define REVISION_A00	0xA00
@@ -2382,11 +2381,9 @@ static int rtl_set_mac_address(struct net_device *dev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	eth_hw_addr_set(dev, addr->sa_data);
+	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 
-	ether_addr_copy(tp->mac_addr, addr->sa_data);
-
-	rtl_rar_set(tp, addr->sa_data);
+	rtl_rar_set(tp, dev->dev_addr);
 
 	return 0;
 }
@@ -4695,7 +4692,7 @@ static void rtl_reinit_mac_phy(struct rtl8169_private *tp)
 	rtl_unlock_work(tp);
 
 	/* Set MAC address */
-	rtl_rar_set(tp, tp->mac_addr);
+	rtl_rar_set(tp, tp->dev->dev_addr);
 
 	rtl_led_set(tp);
 }
@@ -4774,7 +4771,7 @@ static void __rtl8169_resume(struct net_device *dev)
 	tp->chip->wakeup_set(tp, false);
 
 	rtl_pll_power_up(tp);
-	rtl_rar_set(tp, tp->mac_addr);
+	rtl_rar_set(tp, tp->dev->dev_addr);
 
 	rtl_lock_work(tp);
 	napi_enable(&tp->napi);
@@ -11896,11 +11893,11 @@ static int rtl_init_one(struct platform_device *pdev)
 #define RETRY_MAX	10
 	for (retry = 0; retry < RETRY_MAX; retry++) {
 		for (i = 0; i < ETH_ALEN; i++)
-			tp->mac_addr[i] = RTL_R8(MAC0 + i);
+			ndev->dev_addr[i] = RTL_R8(MAC0 + i);
 
-		if (*(u32 *)tp->mac_addr == 0xdeadbeef) {
+		if (*(u32 *)ndev->dev_addr == 0xdeadbeef) {
 			pr_err(PFX "get invalid MAC address %pM, retry %d\n",
-			       tp->mac_addr, retry);
+			       ndev->dev_addr, retry);
 			tmp = RTL_R32(PHYAR);	/* read something else */
 			usleep_range(10000, 11000);
 		} else {
@@ -11908,16 +11905,14 @@ static int rtl_init_one(struct platform_device *pdev)
 		}
 	}
 	if (retry == RETRY_MAX)
-		pr_err(PFX "get invalid MAC address %pM, give up!\n", tp->mac_addr);
-
-	eth_hw_addr_set(ndev, tp->mac_addr);
+		pr_err(PFX "get invalid MAC address %pM, give up!\n", ndev->dev_addr);
 
 	rtl_led_set(tp);
 
 	ndev->ethtool_ops = &rtl8169_ethtool_ops;
 	ndev->watchdog_timeo = RTL8169_TX_TIMEOUT;
 
-	netif_napi_add(ndev, &tp->napi, rtl8169_poll);
+	netif_napi_add(ndev, &tp->napi, rtl8169_poll, R8169_NAPI_WEIGHT);
 
 	/* don't enable SG, IP_CSUM and TSO by default - it might not work
 	 * properly for all devices
