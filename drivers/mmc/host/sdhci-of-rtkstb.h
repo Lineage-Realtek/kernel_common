@@ -10,9 +10,13 @@
 #define MAX_PHASE				32
 #define TUNING_CNT				3
 #define MINIMUM_CONTINUE_LENGTH			16
+#define MAXIMUM_CONTINUE_LENGTH			32
+#define DEFAULT_PHASE				0
 #define PAD_PWR_CHK_CNT				3
 /* Controller clock has large jitter when SSC enable */
 #define RTKQUIRK_SSC_CLK_JITTER			BIT(0)
+/* Controller needs to take care AXI burst boundary */
+#define RTKQUIRK_AXI_BURST_BOUNDARY		BIT(1)
 /* CRT register */
 #define SYS_PLL_SD1				0x1E0
 #define  PHRT0					BIT(1)

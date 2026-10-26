@@ -47,10 +47,10 @@ struct sdhci_rtkstb {
 	struct reset_control *sd_rstn;
 	void __iomem *wrap_base;
 	void __iomem *dhc_base;
+	u32 preset_pll;
 	struct regmap *crt_base;
 	struct regmap *iso_base;
 	struct regmap *pinctrl_base;
-	struct regmap *isosys_base;
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *pins_default;
 	struct pinctrl_state *pins_vsel_3v3;
@@ -58,7 +58,6 @@ struct sdhci_rtkstb {
 	struct pinctrl_state *pins_3v3_drv;
 	struct pinctrl_state *pins_1v8_drv;
 	struct pinctrl_state *pins_pud_cfg;
-	u32 preset_pll;
 };
 
 static const struct soc_device_attribute rtk_soc_parker[] = {
@@ -69,28 +68,6 @@ static const struct soc_device_attribute rtk_soc_parker[] = {
 static const struct soc_device_attribute rtk_soc[] = {
 	{ .family = "Realtek Danvers", },
 	{ .family = "Realtek RTD1325", },
-	{ .family = "Realtek Kent", },
-	{ /* sentinel */ }
-};
-
-static const struct soc_device_attribute rtk_soc_axi_boundary[] = {
-	{ .family = "Realtek Parker", },
-	{ .family = "Realtek Danvers", },
-	{ .family = "Realtek RTD1325", },
-	{ /* sentinel */ }
-};
-
-static const struct soc_device_attribute rtk_soc_power_cut[] = {
-	{ .family = "Realtek Kent", },
-	{ /* sentinel */ }
-};
-
-static const struct soc_device_attribute rtk_soc_voltage_detect_v2[] = {
-	{ .family = "Realtek Kent", },
-	{ /* sentinel */ }
-};
-
-static const struct soc_device_attribute rtk_soc_sd_pwr_inverted[] = {
 	{ .family = "Realtek Kent", },
 	{ /* sentinel */ }
 };
@@ -126,16 +103,9 @@ static int rtkstb_sdhci_pad_power_check(struct sdhci_host *host)
 	u16 ctrl;
 
 	do {
-		if (soc_device_match(rtk_soc_voltage_detect_v2)) {
-			regmap_read(pinctrl_base, ISO_V2_DBG_STATUS, &reg);
-			reg &= SDIO0_H3L1_STATUS_HI_V2;
-		} else {
-			regmap_read(pinctrl_base, ISO_DBG_STATUS, &reg);
-			reg &= SDIO0_H3L1_STATUS_HI;
-		}
-
+		regmap_read(pinctrl_base, ISO_DBG_STATUS, &reg);
 		ctrl = sdhci_readw(host, SDHCI_HOST_CONTROL2);
-		if (reg) {
+		if (reg & SDIO0_H3L1_STATUS_HI) {
 			ctrl &= ~SDHCI_CTRL_VDD_180;
 			sdhci_writew(host, ctrl, SDHCI_HOST_CONTROL2);
 			pad_pwr_3v3 = 1;
@@ -146,7 +116,7 @@ static int rtkstb_sdhci_pad_power_check(struct sdhci_host *host)
 			pad_pwr_3v3 = 0;
 		}
 
-		pad_pwr_chk += 1;
+		pad_pwr_chk += pad_pwr_chk;
 	} while (pad_pwr_3v3 && pad_pwr_chk < PAD_PWR_CHK_CNT);
 
 	return pad_pwr_3v3;
@@ -165,7 +135,7 @@ static void rtkstb_sdhci_wifi_device_reset(struct sdhci_host *host)
 	if (gpiod_direction_output(rtk_host->wifi_rst, 0))
 		dev_err(dev, "fail to set wifi reset gpio low\n");
 
-	mdelay(150);
+	mdelay(200);
 
 	if (gpiod_direction_input(rtk_host->wifi_rst))
 		dev_err(dev, "wifi reset fail\n");
@@ -408,46 +378,20 @@ static void rtkstb_13xxe_sdhci_pll_configure(struct sdhci_host *host, u32 ssc, i
 	}
 }
 
-static void rtkstb_set_sd_power(struct sdhci_host *host, int enable)
-{
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-	struct sdhci_rtkstb *rtk_host = sdhci_pltfm_priv(pltfm_host);
-	struct device *dev = mmc_dev(host->mmc);
-	int ret;
-
-	dev_info(dev, "%s: %s\n", __func__, enable ? "off" : "on");
-
-	if (soc_device_match(rtk_soc_sd_pwr_inverted))
-		enable = !enable;
-
-	ret = gpiod_direction_output(rtk_host->sd_pwr_gpio, enable);
-
-	mdelay(2);
-
-	if (ret)
-		dev_err(dev, "fail to set sd power\n");
-}
-
 static void sdhci_rtkstb_hw_init(struct sdhci_host *host)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_rtkstb *rtk_host = sdhci_pltfm_priv(pltfm_host);
 	struct regmap *crt_base = rtk_host->crt_base;
 	struct regmap *iso_base = rtk_host->iso_base;
+	struct device *dev = mmc_dev(host->mmc);
 	struct regmap *pinctrl_base = rtk_host->pinctrl_base;
-	struct regmap *isosys_base = rtk_host->isosys_base;
 	void __iomem *wrap_base = rtk_host->wrap_base;
-	u32 reg, pwr_cut;
+	u32 reg;
 
 	regmap_update_bits(iso_base, ISO_CTRL_1, SD3_SSCLDO_EN |
 			   SD3_BIAS_EN, SD3_SSCLDO_EN | SD3_BIAS_EN);
 	udelay(200);
-
-	if (soc_device_match(rtk_soc_power_cut)) {
-		regmap_read(isosys_base, ISO_SYS_POWER_CTRL, &pwr_cut);
-		if (pwr_cut & ISO_MAIN2)
-			regmap_update_bits(isosys_base, ISO_SYS_POWER_CTRL, ISO_MAIN2, 0);
-	}
 
 	regmap_read(crt_base, SYS_PLL_SD1, &reg);
 	reg |= PHRT0;
@@ -461,12 +405,14 @@ static void sdhci_rtkstb_hw_init(struct sdhci_host *host)
 		       FIELD_PREP(SSC_DIV_N, SSC_DIV_N_200M);
 		rtkstb_sdhci_pll_configure(host, reg, 0);
 	} else {
-		reg &= ~RTD13XXE_SSC_DIV_N;
 		reg |= FIELD_PREP(RTD13XXE_SSC_DIV_N, RTD13XXE_SSC_DIV_N_200M);
 		rtkstb_13xxe_sdhci_pll_configure(host, reg, 0);
 	}
 
-	rtkstb_set_sd_power(host, 0);
+	if (gpiod_direction_output(rtk_host->sd_pwr_gpio, 0))
+		dev_err(dev, "fail to enable sdmmc power");
+
+	mdelay(10);
 
 	pinctrl_select_state(rtk_host->pinctrl, rtk_host->pins_pud_cfg);
 
@@ -475,9 +421,8 @@ static void sdhci_rtkstb_hw_init(struct sdhci_host *host)
 	reg |= ISREN_WRITE_DATA | INT4_EN;
 	writel(reg, wrap_base + SDHCI_RTK_ISREN);
 
-	if (!soc_device_match(rtk_soc_voltage_detect_v2))
-		regmap_update_bits(pinctrl_base, ISO_DBG_STATUS, SDIO0_H3L1_DETECT_EN,
-				   SDIO0_H3L1_DETECT_EN);
+	regmap_update_bits(pinctrl_base, ISO_DBG_STATUS, SDIO0_H3L1_DETECT_EN,
+			   SDIO0_H3L1_DETECT_EN);
 }
 
 static void rtkstb_sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
@@ -709,7 +654,9 @@ static u8 rtkstb_sdhci_search_final_phase(struct sdhci_host *host, u32 phase_map
 		start += len ? len : 1;
 	}
 
-	if (len_final > MINIMUM_CONTINUE_LENGTH)
+	if (len_final == MAXIMUM_CONTINUE_LENGTH)
+		final_phase = DEFAULT_PHASE;
+	else if (len_final > MINIMUM_CONTINUE_LENGTH)
 		final_phase = (start_final + len_final / 2) % MAX_PHASE;
 	else
 		final_phase = 0xFF;
@@ -907,16 +854,11 @@ static void rtkstb_sdhci_card_event(struct sdhci_host *host)
 	dev_err(mmc_dev(host->mmc), "card event detected\n");
 
 	err = rtkstb_sdhci_pad_power_ctrl(host, MMC_SIGNAL_VOLTAGE_330);
-	if (err)
-		dev_err(mmc_dev(host->mmc), "reset voltage to 3.3v fail\n");
 
-	if (mmc_gpio_get_cd(host->mmc)) {
+	if (mmc_gpio_get_cd(host->mmc))
 		dev_err(mmc_dev(host->mmc), "card insert\n");
-		rtkstb_set_sd_power(host, 0);
-	} else {
+	else
 		dev_err(mmc_dev(host->mmc), "card remove\n");
-		rtkstb_set_sd_power(host, 1);
-	}
 }
 
 static void rtkstb_sdhci_voltage_switch(struct sdhci_host *host)
@@ -935,9 +877,13 @@ static void rtkstb_sdhci_voltage_switch(struct sdhci_host *host)
 static void rtkstb_sdhci_adma_write_desc(struct sdhci_host *host, void **desc, dma_addr_t addr,
 					 int len, unsigned int cmd)
 {
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_rtkstb *rtk_host = sdhci_pltfm_priv(pltfm_host);
+	const struct sdhci_rtkstb_soc_data *soc_data = rtk_host->soc_data;
+	u32 rtkquirks = soc_data->rtkquirks;
 	int tmplen, offset;
 
-	if (likely(!soc_device_match(rtk_soc_axi_boundary) || !(mmc_card_sdio(host->mmc->card)) ||
+	if (likely(!(rtkquirks & RTKQUIRK_AXI_BURST_BOUNDARY) || !(mmc_card_sdio(host->mmc->card)) ||
 	    !len || BOUNDARY_OK(addr, len))) {
 		sdhci_adma_write_desc(host, desc, addr, len, cmd);
 		return;
@@ -1002,21 +948,18 @@ static const struct sdhci_pltfm_data sdhci_rtkstb_pdata = {
 
 static struct sdhci_rtkstb_soc_data rtd1319d_soc_data = {
 	.pdata = &sdhci_rtkstb_pdata,
-	.rtkquirks = RTKQUIRK_SSC_CLK_JITTER,
+	.rtkquirks = RTKQUIRK_SSC_CLK_JITTER |
+		     RTKQUIRK_AXI_BURST_BOUNDARY,
 };
 
 static struct sdhci_rtkstb_soc_data rtd13xxe_soc_data = {
 	.pdata = &sdhci_rtkstb_pdata,
-};
-
-static struct sdhci_rtkstb_soc_data rtk_soc_data = {
-	.pdata = &sdhci_rtkstb_pdata,
+	.rtkquirks = RTKQUIRK_AXI_BURST_BOUNDARY,
 };
 
 static const struct of_device_id sdhci_rtkstb_dt_match[] = {
 	{.compatible = "realtek,rtd1319d-sdmmc", .data = &rtd1319d_soc_data},
 	{.compatible = "realtek,rtd13xxe-sdhci", .data = &rtd13xxe_soc_data},
-	{.compatible = "realtek,rtd1625-sdhci", .data = &rtk_soc_data},
 	{}
 };
 MODULE_DEVICE_TABLE(of, sdhci_rtkstb_dt_match);
@@ -1084,28 +1027,12 @@ static int sdhci_rtkstb_probe(struct platform_device *pdev)
 		goto err_free_pltfm;
 	}
 
-	if (of_device_is_compatible(node, "realtek,rtd1625-sdhci")) {
-		rtk_host->isosys_base = syscon_regmap_lookup_by_phandle(node, "realtek,isosys");
-		if (IS_ERR(rtk_host->isosys_base)) {
-			ret = PTR_ERR(rtk_host->isosys_base);
-			dev_err(&pdev->dev, "couldn't get iso sys register base address\n");
-			goto err_free_pltfm;
-		}
-	}
-
 	if (device_property_read_bool(&pdev->dev, "rtkwifi-sd-rst")) {
 		rtk_host->wifi_rst = devm_gpiod_get(&pdev->dev, "wifi-rst", GPIOD_OUT_LOW);
 		if (IS_ERR(rtk_host->wifi_rst))
 			dev_err(&pdev->dev, "%s rtk wifi sd reset gpio invalid\n", __func__);
 		else
 			rtkstb_sdhci_wifi_device_reset(host);
-	}
-
-	rtk_host->sd_pwr_gpio = devm_gpiod_get(&pdev->dev, "sd-power", GPIOD_OUT_LOW);
-	if (IS_ERR(rtk_host->sd_pwr_gpio)) {
-		dev_err(&pdev->dev, "%s can't request power gpio\n", __func__);
-		ret = PTR_ERR(rtk_host->sd_pwr_gpio);
-		goto err_free_pltfm;
 	}
 
 	rtk_host->sd_rstn = devm_reset_control_get(&pdev->dev, NULL);
