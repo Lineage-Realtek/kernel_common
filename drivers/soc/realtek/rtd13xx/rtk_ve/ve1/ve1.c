@@ -151,7 +151,7 @@ static wait_queue_head_t s_interrupt_wait_q_ve3;
 
 static spinlock_t s_vpu_lock = __SPIN_LOCK_UNLOCKED(s_vpu_lock);
 static spinlock_t s_ve3_lock = __SPIN_LOCK_UNLOCKED(s_ve3_lock);
-static DEFINE_SEMAPHORE(s_vpu_sem, 1);
+static DEFINE_SEMAPHORE(s_vpu_sem);
 static struct list_head s_vbp_head = LIST_HEAD_INIT(s_vbp_head);
 static struct list_head s_inst_list_head = LIST_HEAD_INIT(s_inst_list_head);
 static struct reset_control *rstc_ve1;
@@ -1370,7 +1370,7 @@ static int vpu_map_to_register(struct file *fp, struct vm_area_struct *vm)
 {
 	unsigned long pfn;
 
-	vm_flags_set(vm, VM_IO | VM_RESERVED);
+	vm->vm_flags |= VM_IO | VM_RESERVED;
 	vm->vm_page_prot = pgprot_noncached(vm->vm_page_prot);
 	pfn = vm->vm_pgoff;
 
@@ -1379,7 +1379,7 @@ static int vpu_map_to_register(struct file *fp, struct vm_area_struct *vm)
 
 static int vpu_map_to_physical_memory(struct file *fp, struct vm_area_struct *vm)
 {
-	vm_flags_set(vm, VM_IO | VM_RESERVED);
+	vm->vm_flags |= VM_IO | VM_RESERVED;
 	vm->vm_page_prot = pgprot_writecombine(vm->vm_page_prot);
 
 	return remap_pfn_range(vm, vm->vm_start, vm->vm_pgoff, vm->vm_end-vm->vm_start, vm->vm_page_prot) ? -EAGAIN : 0;
@@ -1394,7 +1394,7 @@ static int vpu_map_to_instance_pool_memory(struct file *fp, struct vm_area_struc
 	char *vmalloc_area_ptr = (char *)s_instance_pool.base;
 	unsigned long pfn;
 
-	vm_flags_set(vm, VM_RESERVED);
+	vm->vm_flags |= VM_RESERVED;
 
 	/* loop over all pages, map it page individually */
 	while (length > 0) {
