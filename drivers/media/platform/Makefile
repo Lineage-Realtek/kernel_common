@@ -84,5 +84,6 @@ obj-$(CONFIG_VIDEO_QCOM_CAMSS)		+= qcom/camss/
 obj-$(CONFIG_VIDEO_QCOM_VENUS)		+= qcom/venus/
 
 obj-y					+= sunxi/
+obj-$(CONFIG_RTK_HDMI_CEC)		+= rtk-cec/
 
 obj-$(CONFIG_VIDEO_MESON_GE2D)		+= meson/ge2d/
