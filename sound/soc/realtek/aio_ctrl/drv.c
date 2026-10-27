@@ -90,13 +90,6 @@ static const struct of_device_id rtk_aio_ctrl_ao_dev_match[] = {
 	{ .compatible = "realtek,audio-out-spdif",  .data = (void *)ENUM_DT_AO_SPDIF },
 	{ .compatible = "realtek,audio-out-hdmi",   .data = (void *)ENUM_DT_AO_HDMI },
 	{ .compatible = "realtek,audio-out-global", .data = (void *)ENUM_DT_AO_GLOBAL },
-	{ .compatible = "realtek,audio-out-tdm",    .data = (void *)ENUM_DT_AO_TDM },
-	{ .compatible = "realtek,audio-out-tdm1",   .data = (void *)ENUM_DT_AO_TDM1 },
-	{ .compatible = "realtek,audio-out-tdm2",   .data = (void *)ENUM_DT_AO_TDM2 },
-	{ .compatible = "realtek,audio-out-i2s1",   .data = (void *)ENUM_DT_AO_I2S1 },
-	{ .compatible = "realtek,audio-out-i2s2",   .data = (void *)ENUM_DT_AO_I2S2 },
-	{ .compatible = "realtek,audio-out-btpcm",  .data = (void *)ENUM_DT_AO_BTPCM },
-	{ .compatible = "realtek,audio-out-btpcm-test",  .data = (void *)ENUM_DT_AO_BTPCM_TEST },
 	{ /* sentinel */ }
 };
 
@@ -104,14 +97,12 @@ struct rtk_aio_ctrl_ao_params {
 	u32 bitmap;
 	u32 i2s_ch;
 	u32 i2s_mode;
-	u32 ao_id;
 };
 
 static int rtk_aio_ctrl_parse_ao_params(struct device_node *np,
                                         struct rtk_aio_ctrl_ao_params *ao_params)
 {
 	struct device_node *child;
-	int cnt = 0;
 
 	ao_params->bitmap = 0;
 
@@ -129,81 +120,39 @@ static int rtk_aio_ctrl_parse_ao_params(struct device_node *np,
 		if (!of_device_is_available(child))
 			continue;
 
-		if (id == ENUM_DT_AO_GLOBAL) {
-			ao_params->bitmap &= ~BIT(id);
-			continue;
-		}
-
-		if (ao_params->ao_id == AUDIO_OUT2 && id != ENUM_DT_AO_I2S1)
-			continue;
-
-		if (id == ENUM_DT_AO_I2S || id == ENUM_DT_AO_I2S1) {
+		if (id == ENUM_DT_AO_I2S) {
 			u32 val = 0;
 
-			if (ao_params->ao_id == AUDIO_OUT2 && id == ENUM_DT_AO_I2S)
-				continue;
+			ao_params->i2s_ch = RTK_AUDIO_OUT_I2S_2_CHANNEL;
+			ao_params->i2s_mode = RTK_AUDIO_OUT_I2S_MODE_MASTER;
 
-			if (ao_params->ao_id == AUDIO_OUT && id == ENUM_DT_AO_I2S1)
-				continue;
+			if (of_property_read_u32(child, "realtek,ao-i2s-channel", &val))
+				val = 0;
+			if (val == 8)
+				ao_params->i2s_ch = RTK_AUDIO_OUT_I2S_8_CHANNEL;
 
-			if (ao_params->ao_id == AUDIO_OUT) {
-				ao_params->i2s_ch = RTK_AUDIO_OUT_I2S_2_CHANNEL;
-				ao_params->i2s_mode = RTK_AUDIO_OUT_I2S_MODE_MASTER;
-
-				if (of_property_read_u32(child, "realtek,ao-i2s-channel", &val))
-					val = 0;
-				if (val == 8)
-					ao_params->i2s_ch = RTK_AUDIO_OUT_I2S_8_CHANNEL;
-				else if (val == 6)
-					ao_params->i2s_ch = RTK_AUDIO_OUT_I2S_6_CHANNEL;
-
-				if (of_property_read_bool(child, "realtek,ao-i2s-slave"))
-					ao_params->i2s_mode = RTK_AUDIO_OUT_I2S_MODE_SLAVE;
-			}
+			if (of_property_read_bool(child, "realtek,ao-i2s-slave"))
+				ao_params->i2s_mode = RTK_AUDIO_OUT_I2S_MODE_SLAVE;
 		}
-		cnt ++;
 		ao_params->bitmap &= ~BIT(id);
 	}
 
-	return cnt;
+	return 0;
 }
-
 
 static int rtk_aio_ctrl_init_remote_ao(struct device *dev)
 {
 	struct rtk_aio_ctrl_data *aio = dev_get_drvdata(dev);
 	struct AUDIO_RPC_AIO_PRIVATEINFO_PARAMETERS params = { 0 };
 	struct rtk_aio_ctrl_ao_params ao_params = { 0 };
-	int ret;
 
-	ao_params.ao_id = AUDIO_OUT;
 	rtk_aio_ctrl_parse_ao_params(dev->of_node, &ao_params);
 
 	params.type = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ENUM_PRIVATEINFO_AIO_AO_INTERFACE_SWITCH_CONTROL);
 	params.argateInfo[0] = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ao_params.bitmap);
 	params.argateInfo[1] = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ao_params.i2s_ch);
 	params.argateInfo[2] = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ao_params.i2s_mode);
-	params.argateInfo[3] = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ao_params.ao_id);
-	ret = rtk_aio_ctrl_send_msg(dev, ENUM_KERNEL_RPC_AIO_PRIVATEINFO, &params, sizeof(params));
-	if (ret)
-		return ret;
-
-	memset(&ao_params, 0, sizeof(struct rtk_aio_ctrl_ao_params));
-	ao_params.ao_id = AUDIO_OUT2;
-	ret = rtk_aio_ctrl_parse_ao_params(dev->of_node, &ao_params);
-	if (!ret)
-		return ret;
-
-	params.type = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ENUM_PRIVATEINFO_AIO_AO_INTERFACE_SWITCH_CONTROL);
-	params.argateInfo[0] = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ao_params.bitmap);
-	params.argateInfo[1] = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ao_params.i2s_ch);
-	params.argateInfo[2] = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ao_params.i2s_mode);
-	params.argateInfo[3] = rtk_aio_ctrl_rpc_to_remote32(&aio->rpc, ao_params.ao_id);
-	ret = rtk_aio_ctrl_send_msg(dev, ENUM_KERNEL_RPC_AIO_PRIVATEINFO, &params, sizeof(params));
-	if (ret)
-		return ret;
-
-	return ret;
+	return rtk_aio_ctrl_send_msg(dev, ENUM_KERNEL_RPC_AIO_PRIVATEINFO, &params, sizeof(params));
 }
 
 static int rtk_aio_ctrl_init_default(struct device *dev)

@@ -1120,11 +1120,9 @@ static int snd_realtek_hw_capture_malloc_ring(struct snd_pcm_runtime *runtime)
 	mutex_lock(&dev->mutex);
 
 	if (dpcm->source_in == ENUM_AIN_I2S_LOOPBACK) {
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
 		rheap_setup_dma_pools(dev, "rtk_media_heap",
 			RTK_FLAG_PROTECTED_V2_AO_POOL | RTK_FLAG_SCPUACC |
 			RTK_FLAG_ACPUACC, __func__);
-#endif
 	}
 
 	for (ch = 0; ch < runtime->channels ; ++ch) {
@@ -1143,13 +1141,11 @@ static int snd_realtek_hw_capture_malloc_ring(struct snd_pcm_runtime *runtime)
 		if (!vaddr) {
 			dev_err(dev, "%s dma_alloc fail \n", __func__);
 
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
 			/* Reset to the default heap */
 			rheap_setup_dma_pools(dev, "rtk_media_heap",
 					RTK_FLAG_NONCACHED |
 					RTK_FLAG_SCPUACC |
 					RTK_FLAG_ACPUACC, __func__);
-#endif
 
 			mutex_unlock(&dev->mutex);
 			return bMallocSuccess;
@@ -1160,12 +1156,10 @@ static int snd_realtek_hw_capture_malloc_ring(struct snd_pcm_runtime *runtime)
 		dpcm->nRingSize = size;
 	}
 
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
 	/* Reset to the default heap */
 	rheap_setup_dma_pools(dev, "rtk_media_heap",
 			RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
 			RTK_FLAG_ACPUACC, __func__);
-#endif
 
 	mutex_unlock(&dev->mutex);
 
@@ -3591,14 +3585,14 @@ static int snd_card_create_PCM_instance(struct RTK_snd_card *pSnd,
 
 	p = pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
 	for (i = 0; i < playback_substreams; i++) {
-		p->dma_buffer.dev.dev = pcm->card->dev;
+		p->dma_buffer.dev.dev = snd_dma_continuous_data(GFP_KERNEL);
 		p->dma_buffer.dev.type = SNDRV_DMA_TYPE_DEV_WC_SG;
 		p = p->next;
 	}
 
 	p = pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
 	for (i = 0; i < capture_substreams; i++) {
-		p->dma_buffer.dev.dev = pcm->card->dev;
+		p->dma_buffer.dev.dev = snd_dma_continuous_data(GFP_KERNEL);
 		p->dma_buffer.dev.type = SNDRV_DMA_TYPE_DEV_WC_SG;
 		p = p->next;
 	}
@@ -3885,12 +3879,10 @@ static int snd_card_probe(struct platform_device *devptr)
 	if (err < 0)
 		return err;
 
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
 	set_dma_ops(&devptr->dev, &rheap_dma_ops);
 	rheap_setup_dma_pools(&devptr->dev, "rtk_audio_heap",
 				 RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
 				 RTK_FLAG_ACPUACC, __func__);
-#endif
 
 	// save the platform device
 	devices[card->number] = devptr;
@@ -4093,4 +4085,3 @@ module_init(RTK_alsa_card_init);
 module_exit(RTK_alsa_card_exit);
 
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS(DMA_BUF);

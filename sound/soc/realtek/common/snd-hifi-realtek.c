@@ -5278,7 +5278,7 @@ static int snd_card_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-#ifdef CONFIG_DMABUF_HEAPS_REALTEK
+#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	/* set up dma buffer operation */
 	set_dma_ops(card->dev, &rheap_dma_ops);
 #endif
@@ -5482,4 +5482,3 @@ module_init(RTK_alsa_card_init);
 module_exit(RTK_alsa_card_exit);
 
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS(DMA_BUF);
