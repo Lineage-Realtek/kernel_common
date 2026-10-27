@@ -12,7 +12,7 @@
  * GNU General Public License for more details.
  */
 
-#include <drm/display/drm_dp_helper.h>
+#include <drm/drm_dp_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_of.h>

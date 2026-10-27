@@ -3,7 +3,6 @@
  * Copyright (c) 2019 RealTek Inc.
  */
 
-#include <drm/display/drm_hdmi_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_of.h>
 #include <drm/drm_print.h>

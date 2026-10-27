@@ -5,7 +5,6 @@
  * Copyright (c) 2021 Realtek Semiconductor Corp.
  */
 
-#include <drm/display/drm_hdmi_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_of.h>
 #include <drm/drm_print.h>
@@ -801,7 +800,6 @@ static void send_scdc_tmdsconfig(struct rtk_hdmi *hdmi,
 {
 	struct drm_display_info *display_info = &hdmi->connector.display_info;
 	struct drm_scdc *scdc = &hdmi->connector.display_info.hdmi.scdc;
-	struct drm_connector *connector = &hdmi->connector;
 	bool clock_ratio = false;
 	bool en_scramb = false;
 
@@ -811,7 +809,7 @@ static void send_scdc_tmdsconfig(struct rtk_hdmi *hdmi,
 			clock_ratio = true;
 	}
 
-	if ((display_info->color_formats & DRM_COLOR_FORMAT_YCBCR420) ||
+	if ((display_info->color_formats & DRM_COLOR_FORMAT_YCRCB420) ||
 		(hdmi->hdcp.sink_hdcp_ver == HDCP_2x) ||
 		(hdmi->connector.force == DRM_FORCE_ON)) {
 		scdc->supported = 1;
@@ -821,8 +819,8 @@ static void send_scdc_tmdsconfig(struct rtk_hdmi *hdmi,
 		mode->clock, scdc->supported, clock_ratio, en_scramb);
 
 	if (en_scramb || scdc->supported) {
-		drm_scdc_set_high_tmds_clock_ratio(connector, clock_ratio);
-		drm_scdc_set_scrambling(connector, en_scramb);
+		drm_scdc_set_high_tmds_clock_ratio(hdmi->ddc, clock_ratio);
+		drm_scdc_set_scrambling(hdmi->ddc, en_scramb);
 	}
 }
 
@@ -2412,7 +2410,6 @@ static int rtk_hdmi_suspend(struct device *dev)
 {
 	struct rtk_hdmi *hdmi = dev_get_drvdata(dev);
 	struct drm_scdc *scdc = &hdmi->connector.display_info.hdmi.scdc;
-	struct drm_connector *connector = &hdmi->connector;
 
 	if (!hdmi)
 		return 0;
@@ -2446,8 +2443,8 @@ static int rtk_hdmi_suspend(struct device *dev)
 
 	/* Send no scramble for prevent HDMI 5V still exist after suspend */
 	if (hdmi->hpd_state && scdc->supported) {
-		drm_scdc_set_high_tmds_clock_ratio(connector, false);
-		drm_scdc_set_scrambling(connector, false);
+		drm_scdc_set_high_tmds_clock_ratio(hdmi->ddc, false);
+		drm_scdc_set_scrambling(hdmi->ddc, false);
 	}
 
 	return 0;

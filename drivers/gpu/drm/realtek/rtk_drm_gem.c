@@ -18,7 +18,7 @@
 #include <drm/drm_debugfs.h>
 #include <drm/drm_device.h>
 #include <drm/drm_file.h>
-#include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_cma_helper.h>
 
 #include "rtk_drm_drv.h"
 #include "rtk_drm_gem.h"
@@ -39,7 +39,7 @@ int rtk_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 	rtk_obj = to_rtk_gem_obj(gem_obj);
 	drm = gem_obj->dev;
 
-	vm_flags_clear(vma, VM_PFNMAP);
+	vma->vm_flags &= ~VM_PFNMAP;
 
 	vma->vm_pgoff = 0;
 	ret = dma_mmap_coherent(drm->dev, vma, rtk_obj->vaddr, rtk_obj->paddr,
@@ -198,7 +198,7 @@ int rtk_gem_prime_mmap(struct drm_gem_object *gem_obj,
 	if (ret < 0)
 		return ret;
 
-	vm_flags_clear(vma, VM_PFNMAP);
+	vma->vm_flags &= ~VM_PFNMAP;
 	vma->vm_pgoff = 0;
 	ret = dma_mmap_coherent(drm->dev, vma, rtk_obj->vaddr, rtk_obj->paddr,
 				gem_obj->size);
@@ -217,7 +217,7 @@ void rtk_gem_free_object(struct drm_gem_object *gem_obj)
 	if (gem_obj->import_attach) {
 #ifdef CONFIG_RTK_METADATA_AUTOJUDGE
 		if (rtk_obj->vaddr) {
-			struct iosys_map map = IOSYS_MAP_INIT_VADDR(rtk_obj->vaddr);
+			struct dma_buf_map map = DMA_BUF_MAP_INIT_VADDR(rtk_obj->vaddr);
 			struct dma_buf_attachment *attach = gem_obj->import_attach;
 
 			dma_buf_vunmap(attach->dmabuf, &map);
@@ -234,16 +234,16 @@ void rtk_gem_free_object(struct drm_gem_object *gem_obj)
 	kfree(rtk_obj);
 }
 
-int rtk_gem_prime_vmap(struct drm_gem_object *gem_obj, struct iosys_map *map)
+int rtk_gem_prime_vmap(struct drm_gem_object *gem_obj, struct dma_buf_map *map)
 {
 	struct rtk_gem_object *rtk_obj = to_rtk_gem_obj(gem_obj);
 
-	iosys_map_set_vaddr(map, rtk_obj->vaddr);
+	dma_buf_map_set_vaddr(map, rtk_obj->vaddr);
 
 	return 0;
 }
 
-void rtk_gem_prime_vunmap(struct drm_gem_object *gem_obj, struct iosys_map *map)
+void rtk_gem_prime_vunmap(struct drm_gem_object *gem_obj, struct dma_buf_map *map)
 {
     /* Nothing to do */
 }
@@ -253,7 +253,7 @@ static const struct drm_gem_object_funcs rtk_gem_object_funcs = {
 	.get_sg_table = rtk_gem_prime_get_sg_table,
 	.vmap = rtk_gem_prime_vmap,
 	.vunmap	= rtk_gem_prime_vunmap,
-	.vm_ops = &drm_gem_dma_vm_ops,
+	.vm_ops = &drm_gem_cma_vm_ops,
 };
 
 struct rtk_gem_object *
@@ -283,7 +283,7 @@ struct drm_gem_object *rtk_gem_prime_import_sg_table(struct drm_device *dev,
 	struct rtk_gem_object *rtk_obj;
 #ifdef CONFIG_RTK_METADATA_AUTOJUDGE
 	struct video_object *vobj;
-	struct iosys_map map;
+	struct dma_buf_map map;
 	int ret;
 #endif
 	if (sg->nents != 1)

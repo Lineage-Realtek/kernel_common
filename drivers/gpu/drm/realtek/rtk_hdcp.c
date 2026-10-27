@@ -5,7 +5,7 @@
  * Copyright (c) 2022 Realtek Semiconductor Corp.
  */
 
-#include <drm/display/drm_hdcp_helper.h>
+#include <drm/drm_hdcp.h>
 #include <drm/drm_print.h>
 #include <linux/component.h>
 #include <linux/delay.h>

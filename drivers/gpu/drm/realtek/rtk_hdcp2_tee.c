@@ -5,7 +5,7 @@
  * Copyright (c) 2022 Realtek Semiconductor Corp.
  */
 
-#include <drm/display/drm_hdcp.h>
+#include <drm/drm_hdcp.h>
 #include <drm/drm_print.h>
 #include <linux/io.h>
 #include <linux/ioctl.h>
@@ -84,7 +84,8 @@ rtk_hdmi_hdcp2_tee_generate_random_rtx(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RTX_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RTX_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
@@ -144,7 +145,8 @@ rtk_hdmi_hdcp2_tee_verify_rx_cert(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_CERT_RX_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_CERT_RX_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
@@ -208,15 +210,18 @@ rtk_hdmi_hdcp2_tee_check_stored_km(struct rtk_hdcp2_tee *hdcp2_tee,
 
 	*km_stored = false;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RECEIVER_ID_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RECEIVER_ID_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
-	shm2 = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_E_KH_KM_LEN);
+	shm2 = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_E_KH_KM_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm2))
 		goto free_shm;
 
-	shm3 = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RRX_LEN+HDCP_2_2_RTX_LEN);
+	shm3 = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RRX_LEN+HDCP_2_2_RTX_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm3))
 		goto free_shm2;
 
@@ -289,7 +294,8 @@ rtk_hdmi_hdcp2_tee_prepare_no_stored_km(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_E_KPUB_KM_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_E_KPUB_KM_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
@@ -361,16 +367,18 @@ rtk_hdmi_hdcp2_tee_verify_hprime(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_H_PRIME_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_H_PRIME_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
-	shm2 = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_H_PRIME_LEN);
+	shm2 = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_H_PRIME_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm2))
 		goto free_shm;
 
-	shm3 = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx,
-			     HDCP_2_2_RRX_RTX_RXCAPS_TXCAPS_LEN);
+	shm3 = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RRX_RTX_RXCAPS_TXCAPS_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm3))
 		goto free_shm2;
 
@@ -445,7 +453,8 @@ rtk_hdmi_hdcp2_tee_store_pairing_info(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_E_KH_KM_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_E_KH_KM_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
@@ -493,7 +502,8 @@ rtk_hdmi_hdcp2_tee_initiate_locality_check(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RN_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RN_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
@@ -550,11 +560,13 @@ rtk_hdmi_hdcp2_tee_verify_lprime(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_L_PRIME_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_L_PRIME_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
-	shm2 = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_L_PRIME_LEN);
+	shm2 = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_L_PRIME_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm2))
 		goto free_shm;
 
@@ -619,11 +631,13 @@ rtk_hdmi_hdcp2_tee_get_session_key(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_E_DKEY_KS_LEN);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_E_DKEY_KS_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
-	shm2 = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RIV_LEN);
+	shm2 = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_RIV_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm2))
 		goto free_shm;
 
@@ -690,11 +704,13 @@ rtk_hdmi_hdcp2_tee_repeater_check_flow_prepare_ack(struct rtk_hdcp2_tee *hdcp2_t
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, msg_size);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, msg_size,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
-	shm2 = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_V_PRIME_HALF_LEN);
+	shm2 = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_V_PRIME_HALF_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm2))
 		goto free_shm;
 
@@ -791,11 +807,13 @@ rtk_hdmi_hdcp2_tee_verify_mprime(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, input_size);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, input_size,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
-	shm2 = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, HDCP_2_2_MPRIME_LEN);
+	shm2 = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, HDCP_2_2_MPRIME_LEN,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm2))
 		goto free_shm;
 
@@ -856,7 +874,8 @@ static int rtk_hdmi_hdcp2_tee_enable_hdcp2_cipher(struct rtk_hdcp2_tee *hdcp2_te
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, 1);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, 1,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 
@@ -978,7 +997,8 @@ static void rtk_hdmi_hdcp2_tee_update_mCap(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, 1);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, 1,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm)) {
 		dev_err(hdmi->dev, "hdcp2_tee update_mCap tee_shm_alloc fail");
 		goto exit;
@@ -1140,7 +1160,8 @@ rtk_hdmi_hdcp2_tee_write_key(struct rtk_hdcp2_tee *hdcp2_tee,
 	arg_in.session = hdcp2_tee->hdcp2_arg.session;
 	arg_in.num_params = 4;
 
-	shm = tee_shm_alloc_kernel_buf(hdcp2_tee->hdcp2_ctx, keyLength);
+	shm = tee_shm_alloc(hdcp2_tee->hdcp2_ctx, keyLength,
+			    TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		goto exit;
 

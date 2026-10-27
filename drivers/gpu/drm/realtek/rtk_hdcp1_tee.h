@@ -5,7 +5,7 @@
 #ifndef _HDCP1_TEE_H_INCLUDED_
 #define _HDCP1_TEE_H_INCLUDED_
 
-#include <drm/display/drm_hdcp.h>
+#include <drm/drm_hdcp.h>
 #include <linux/tee_drv.h>
 #include <uapi/linux/tee.h>
 

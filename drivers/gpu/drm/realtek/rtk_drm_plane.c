@@ -23,7 +23,7 @@
 #include <drm/drm_plane.h>
 #include <drm/drm_vblank.h>	// DEBUG: struct drm_pending_vblank_event
 #include <linux/mm_types.h>
-#include <linux/iosys-map.h>
+#include <linux/dma-buf-map.h>
 #include "rtk_drm_drv.h"
 #include "rtk_drm_fb.h"
 #include "rtk_drm_gem.h"

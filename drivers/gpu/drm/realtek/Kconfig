@@ -3,11 +3,6 @@ config DRM_RTK
 	depends on DRM
 	select DRM_GEM_CMA_HELPER
 	select DRM_KMS_HELPER
-	select DRM_GEM_DMA_HELPER
-	select DRM_DISPLAY_HELPER
-	select DRM_DISPLAY_DP_HELPER
-	select DRM_DISPLAY_HDCP_HELPER
-	select DRM_DISPLAY_HDMI_HELPER
 	select DRM_MIPI_DSI
 	help
 	  Choose this option if you have a Realtek SoCs.

@@ -8,7 +8,7 @@
 
 #include <linux/reset.h>
 
-#include <drm/display/drm_dp_helper.h>
+#include <drm/drm_dp_helper.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_encoder.h>
 

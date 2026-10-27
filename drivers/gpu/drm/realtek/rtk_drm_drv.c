@@ -22,7 +22,6 @@
 #include <drm/drm_of.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
-#include <drm/drm_fbdev_generic.h>
 #include <linux/component.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -119,8 +118,6 @@ static int rtk_drm_bind(struct device *dev)
 	ret = drm_dev_register(drm, 0);
 	if (ret)
 		goto err_register_drm;
-
-	drm_fbdev_generic_setup(drm, 32);
 
 	return 0;
 

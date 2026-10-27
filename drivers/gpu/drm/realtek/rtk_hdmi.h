@@ -6,7 +6,7 @@
 #ifndef RTK_HDMI_H_
 #define RTK_HDMI_H_
 
-#include <drm/display/drm_scdc_helper.h>
+#include <drm/drm_scdc_helper.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_probe_helper.h>

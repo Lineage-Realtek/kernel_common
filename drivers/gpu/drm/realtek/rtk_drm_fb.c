@@ -224,7 +224,7 @@ void rtk_drm_mode_config_init(struct drm_device *dev)
 	dev->mode_config.cursor_width  = RTK_DRM_FB_MIN_WIDTH;
 	dev->mode_config.cursor_height = RTK_DRM_FB_MIN_HEIGHT;
 
-	dev->mode_config.fb_modifiers_not_supported  = false;
+	dev->mode_config.allow_fb_modifiers = true;
 	dev->mode_config.funcs = &rtk_drm_mode_config_funcs;
 	dev->mode_config.helper_private = &rtk_drm_mode_config_helpers;
 }

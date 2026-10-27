@@ -324,7 +324,9 @@ irqreturn_t rtk_crtc_isr(int irq, void *dev_id)
 static void rtk_crtc_change_tv_system(struct drm_crtc *crtc)
 {
 	struct rtk_drm_crtc *rtk_crtc = to_rtk_crtc(crtc);
-	for (int i = 0; i < rtk_crtc->plane_count; i++) {
+	int i;
+
+	for (i = 0; i < rtk_crtc->plane_count; i++) {
 		struct rtk_drm_plane *rtk_plane = &rtk_crtc->nplanes[i];
 
 		rtk_plane->disp_win.videoWin.x = 0;

@@ -6,7 +6,7 @@
 #ifndef _RTK_DRM_CRTC_H
 #define _RTK_DRM_CRTC_H
 
-#include <linux/iosys-map.h>
+#include <linux/dma-buf-map.h>
 #include "rtk_drm_rpc.h"
 #include "rtk_drm_fence.h"
 
@@ -47,7 +47,7 @@ struct rtk_drm_plane {
 	struct dma_buf *dmabuf;
 	struct dma_buf_attachment *attach;
 	struct dma_buf_attachment *refclock_attach;
-	struct iosys_map map;
+	struct dma_buf_map map;
 #endif
 	struct dma_buf *refclock_dmabuf;
 	struct rtk_rpc_info *rpc_info;
