@@ -170,8 +170,8 @@ static int rtk_gpu_wrap_power_on(struct rtk_gpu_wrap_data *data)
 {
 	reset_control_deassert(data->rstc);
 	reset_control_deassert(data->rstc_bist);
-	clk_prepare_enable(data->clk);
 	clk_prepare_enable(data->clk_ts_src);
+	clk_prepare_enable(data->clk);
 
 	dmb(sy); /* for rtd1319d/rtd1315e rbus/rbus5 sync */
 
@@ -184,13 +184,13 @@ static int rtk_gpu_wrap_power_off(struct rtk_gpu_wrap_data *data)
 {
 	dmb(sy); /* for rtd1319d/rtd1315e rbus/rbus5 sync */
 
-	clk_disable_unprepare(data->clk_ts_src);
 	/*
 	 * Since mali driver checks __clk_is_enabled() to perform clk_disable_unprepare() in
 	 * power_control_term(), check again to prevent WARNING.
 	 */
 	if (__clk_is_enabled(data->clk))
 		clk_disable_unprepare(data->clk);
+	clk_disable_unprepare(data->clk_ts_src);
 	reset_control_assert(data->rstc);
 	reset_control_assert(data->rstc_bist);
 	return 0;
