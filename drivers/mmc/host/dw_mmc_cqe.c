@@ -257,8 +257,8 @@ static void dw_mci_cmd_timer(struct timer_list *t)
 	struct dw_mci *host = from_timer(host, t, timer);;
 
 	if(host->int_waiting) {
-		pr_err("%s fired, opcode=%d, arg=0x%x, irq status=0x%x, err irq status=0x%x, auto err irq status=0x%x\n", __func__,
-			host->opcode, host->arg,
+		pr_err("%s fired, opcode=%d, arg=0x%x, irq status=0x%x, err irq status=0x%x, auto err irq status=0x%x\n",
+			__func__, host->opcode, host->arg,
 			host->normal_interrupt, host->error_interrupt, host->auto_error_interrupt);
 		dw_mci_clr_signal_int(host);
 		dw_mci_get_int(host);
@@ -623,8 +623,8 @@ static int dw_mci_init_slot(struct dw_mci *host)
 	if (!mmc->ocr_avail)
 		mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 
-	pr_err("%s: regulator support volage ocr_avail=0x%x\n", __func__,
-			mmc->ocr_avail);
+	printk(KERN_ERR "%s: regulator support volage ocr_avail=0x%x\n",
+			__func__, mmc->ocr_avail);
 
 	ret = mmc_of_parse(mmc);
 	if (ret)
@@ -737,6 +737,14 @@ static u32 dw_mci_prepare_command(struct mmc_host *mmc, struct mmc_command *cmd)
 	return cmdr;
 }
 
+static void dw_mci_prepare_desc64(struct dw_mci *host,
+				 struct mmc_data *data,
+				 struct scatterlist *sg)
+{
+	/*ToDo*/
+	pr_err("Currently, the 64bit DMA mode is not implemented yet.\n");
+}
+
 static void dw_mci_prepare_desc32(struct dw_mci *host,
 				 struct mmc_data *data,
 				 struct scatterlist *sg)
@@ -813,7 +821,7 @@ static void dw_mci_submit_data(struct dw_mci *host, struct mmc_data *data)
 	host->sg = data->sg;
 
 	if (host->dma_64bit_address == 1)
-		pr_err("Currently, the 64bit DMA mode is not implemented yet.\n");
+		dw_mci_prepare_desc64(host, host->data, host->sg);
 	else
 		dw_mci_prepare_desc32(host, host->data, host->sg);
 }
@@ -846,8 +854,8 @@ void wait_done(struct dw_mci *host, volatile u32 *addr,
 			break;
 
 		if(n++ > 3000000) {
-			pr_err("%s: opcode=%d, addr=%px, *addr=0x%x, mask=0x%x, value=0x%x\n", __func__,
-				host->opcode, addr, readl(addr), mask, value);
+			pr_err("%s: opcode=%d, addr=%px, *addr=0x%x, mask=0x%x, value=0x%x\n",
+				__func__, host->opcode, addr, readl(addr), mask, value);
 			break;
 		}
 		udelay(1);
@@ -858,8 +866,7 @@ EXPORT_SYMBOL(wait_done);
 static void dw_mci_regs_show(struct dw_mci *host,
 			    struct mmc_command *cmd, u32 cmd_flags)
 {
-	pr_err("opcode = %d, arg = 0x%x, cmdflags = 0x%x\n",
-		cmd->opcode, cmd->arg, cmd_flags);
+	pr_err("opcode = %d, arg = 0x%x, cmdflags = 0x%x\n", cmd->opcode, cmd->arg, cmd_flags);
 	pr_err("status_interrupt = 0x%x, error_interrupt = 0x%x, auto_error_interrupt = 0x%x\n",
 		host->normal_interrupt, host->error_interrupt, host->auto_error_interrupt);
 	pr_err("0x24 = 0x%x\n", mci_readl(host, PSTATE_REG));
@@ -940,7 +947,7 @@ static int dw_mci_start_command(struct dw_mci *host,
 
 		if (host->normal_interrupt & SDMMC_ERR_INTERRUPT) {
 			if(host->tuning == 1) {
-				/*dev_info(host->dev, "Tuning error and just ignore.\n");*/
+				/*pr_err("Tuning error and just ignore.\n");*/
 			}
 			else {
 				dw_mci_regs_show(host, cmd, cmd_flags);
@@ -1145,8 +1152,8 @@ static void dw_mci_err_handle(struct dw_mci *host,
 					rty_cnt++;
 					if(rty_cnt > 100) {
 						if(err==-DW_MCI_NOT_READY)
-							pr_err("%s: status check failed, err = %d, status = 0x%x\n", __func__,
-								err, status);
+							pr_err("%s: status check failed, err = %d, status = 0x%x\n",
+								__func__, err, status);
 						break;
 					}
 				}
@@ -1185,6 +1192,7 @@ static void __dw_mci_start_request(struct dw_mci *host,
 		mci_writew(host, BLOCKCOUNT_R, data->blocks);
 		mci_writel(host, BLOCKSIZE_R, data->blksz);
 		mci_writel(host, ADMA_SA_LOW_R, host->desc_paddr);
+
 		dataflags = dw_mci_prepare_data_flags(cmd);
 
 		mci_writew(host, XFER_MODE_R, dataflags);
@@ -1285,9 +1293,9 @@ static int dw_mci_switch(struct mmc_host *mmc,
 
 	err = dw_mci_start_command(host, &cmd, cmdr);
 
-	if (err) {
-		pr_err("%s interrupt status reg : 0x%x, interrupt error reg : 0x%x\n", __func__,
-			host->normal_interrupt, host->error_interrupt);
+	if(err) {
+		pr_err("%s interrupt status reg : 0x%x, interrupt error reg : 0x%x\n",
+			__func__, host->normal_interrupt, host->error_interrupt);
 	}
 
 	return err;
@@ -1309,8 +1317,7 @@ static int dw_mci_cqe_switch(struct mmc_host *mmc, bool enable)
 			    EXT_CSD_CMDQ_MODE_EN, val,
 			    card->ext_csd.generic_cmd6_time);
 	if (ret) {
-		pr_err("%s: cmdq mode %sable failed %d\n", __func__,
-			enable ? "en" : "dis", ret);
+		pr_err("%s: cmdq mode %sable failed %d\n", __func__, enable ? "en" : "dis", ret);
 		goto out;
 	}
 	else
@@ -1449,8 +1456,7 @@ static void dw_mci_cqhci_init(struct dw_mci *host)
 		if(PTR_ERR(host->cqe) == -EINVAL ||
 		   PTR_ERR(host->cqe) == -ENOMEM ||
 		   PTR_ERR(host->cqe)==-EBUSY) {
-			pr_err("Unable to get the cmdq related attribute, err=%ld\n",
-				PTR_ERR(host->cqe));
+			pr_err("Unable to get the cmdq related attribute, err=%ld\n", PTR_ERR(host->cqe));
 			host->cqe = 0;
 			host->pdata->caps2 &= ~(MMC_CAP2_CQE|MMC_CAP2_CQE_DCMD);
 		}
@@ -1508,8 +1514,6 @@ int dw_mci_probe(struct dw_mci *host)
 		host->bus_hz = clk_get_rate(host->ciu_clk);
 	}
 
-	/* Since pll_emmc return 0 by early fpga test, we fill in value(196999969) instead*/
-	//host->bus_hz = 196999969;
 	if (!host->bus_hz) {
 		dev_err(host->dev,
 			"Platform data must supply bus speed\n");
@@ -1548,6 +1552,10 @@ int dw_mci_probe(struct dw_mci *host)
 	 * user can modify this setting by drv_data->init()
 	 */
 	host->use_dma = TRANS_MODE_DMA;
+
+	/* using 32bit DMA by default,
+	 * user can modify this setting by drv_data->init()
+	 */
 	host->dma_64bit_address = 0;
 
 	/* This flag will be set 1 when doing tuning,
@@ -1629,7 +1637,7 @@ int dw_mci_cqe_runtime_suspend(struct device *dev)
 
 	if (host->pdata && (host->pdata->caps2 & MMC_CAP2_CQE)) {
 		if(host->slot) {
-			pr_err("[%s] cqe suspend\n", __func__);
+			printk(KERN_ERR "[%s] cqe suspend\n", __func__);
 			ret = cqhci_suspend(host->slot->mmc);
 			if (ret) {
 				pr_err("%s: cqe suspend failed\n", __func__);
@@ -1663,7 +1671,7 @@ int dw_mci_cqe_runtime_resume(struct device *dev)
 
 	if (host->pdata && (host->pdata->caps2 & MMC_CAP2_CQE)) {
 		if(host->slot) {
-			pr_err("[%s] cqe resume\n", __func__);
+			printk(KERN_ERR "[%s] cqe resume\n", __func__);
 			ret = cqhci_resume(host->slot->mmc);
 			if (ret)
 				pr_err("%s: cqe resume failed\n", __func__);
@@ -1676,13 +1684,13 @@ EXPORT_SYMBOL(dw_mci_cqe_runtime_resume);
 #else
 int dw_mci_cqe_runtime_suspend(struct device *dev)
 {
-	dev_err(host->dev, "user should enable CONFIG_PM\n");
+	pr_err("user should enable CONFIG_PM\n");
 	return 0;
 }
 EXPORT_SYMBOL(dw_mci_cqe_runtime_suspend);
 int dw_mci_cqe_runtime_resume(struct device *dev)
 {
-	dev_err(host->dev, "user should enable CONFIG_PM\n");
+	pr_err("user should enable CONFIG_PM\n");
 	return 0;
 }
 EXPORT_SYMBOL(dw_mci_cqe_runtime_resume);
