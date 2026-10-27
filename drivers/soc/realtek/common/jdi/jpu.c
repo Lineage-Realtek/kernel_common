@@ -90,7 +90,7 @@ static int dbus_en = 1;
 #define JPEG_DBUS_REG (0x0000 + 0xF00)
 
 static spinlock_t s_jpu_lock = __SPIN_LOCK_UNLOCKED(s_jpu_lock);
-static DEFINE_SEMAPHORE(s_jpu_sem, 1);
+static DEFINE_SEMAPHORE(s_jpu_sem);
 static struct list_head s_jbp_head = LIST_HEAD_INIT(s_jbp_head);
 static struct list_head s_jpu_inst_list_head = LIST_HEAD_INIT(s_jpu_inst_list_head);
 
@@ -594,7 +594,7 @@ static int jpu_map_to_register(struct file *fp, struct vm_area_struct *vm)
 {
 	unsigned long pfn;
 
-	vm_flags_set(vm, VM_IO | VM_RESERVED);
+	vm->vm_flags |= VM_IO | VM_RESERVED;
 	vm->vm_page_prot = pgprot_noncached(vm->vm_page_prot);
 	pfn = vm->vm_pgoff;
 
@@ -603,7 +603,7 @@ static int jpu_map_to_register(struct file *fp, struct vm_area_struct *vm)
 
 static int jpu_map_to_physical_memory(struct file *fp, struct vm_area_struct *vm)
 {
-	vm_flags_set(vm, VM_IO | VM_RESERVED);
+	vm->vm_flags |= VM_IO | VM_RESERVED;
 	vm->vm_page_prot = pgprot_writecombine(vm->vm_page_prot);
 
 	return remap_pfn_range(vm, vm->vm_start, vm->vm_pgoff, vm->vm_end-vm->vm_start, vm->vm_page_prot) ? -EAGAIN : 0;
@@ -618,7 +618,7 @@ static int jpu_map_to_instance_pool_memory(struct file *fp, struct vm_area_struc
 	char *vmalloc_area_ptr = (char *)s_jpu_instance_pool.base;
 	unsigned long pfn;
 
-	vm_flags_set(vm, VM_RESERVED);
+	vm->vm_flags |= VM_RESERVED;
 
 	/* loop over all pages, map it page individually */
 	while (length > 0) {
@@ -949,7 +949,6 @@ static const struct of_device_id rtk_jpeg_dt_match[] = {
 	{ .compatible = "realtek,rtd13xx-jpeg" },
 	{ .compatible = "realtek,rtd16xxb-jpeg" },
 	{ .compatible = "realtek,rtd13xxd-jpeg" },
-	{ .compatible = "realtek,kent-jpeg" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, rtk_jpeg_dt_match);
