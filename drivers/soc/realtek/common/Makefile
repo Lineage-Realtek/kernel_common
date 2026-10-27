@@ -47,5 +47,4 @@ obj-$(CONFIG_RTK_VOLTAGE_DETECTOR)	+= rtk_voltage_detector.o
 obj-y					+= dpi_tee/
 obj-y					+= mcp/
 obj-y					+= rtk_pd/
-obj-y					+= rtk_sc_wrap.o
 obj-y					+= sysdbg/
