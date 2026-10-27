@@ -2,6 +2,10 @@
 
 menu "Realtek SoC drivers"
 
+config RTK_RESERVE_MEMORY
+	bool "RTK Reserve Memory for Video/Image Codec"
+	default n
+
 config RTK_IMAGE_CODEC
 	tristate "RTK Image Codec"
 	default y
@@ -32,17 +36,18 @@ config RTD13XXD_VE1_CODEC
 	depends on RTD13XXD_RTK_CODEC
 	default n
 
-menuconfig RTD1325_RTK_CODEC
-	tristate "Realtek RTD1325 Codec"
+menuconfig RTD13XXE_RTK_CODEC
+	tristate "Realtek RTD13XXE Codec"
+	select RTK_RESERVE_MEMORY
 	default n
 	help
-	  Realtek RTD1325 codec support.
+	  Realtek RTD13XXE codec support.
 
 	  If unsure, say N.
 
-config RTD1325_VE1_CODEC
+config RTD13XXE_VE1_CODEC
 	tristate "RTK Video Engine 1 Codec"
-	depends on RTD1325_RTK_CODEC
+	depends on RTD13XXE_RTK_CODEC
 	default n
 
 menuconfig RTD16XXB_RTK_CODEC

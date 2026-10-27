@@ -22,7 +22,6 @@
 
 #include "ve1.h"
 #include "compat_ve1.h"
-#include "puwrap.h"
 
 /* See drivers/soc/realtek/rtd129x/rtk_ve/ve1/ve1.h for the definition of these structs */
 typedef struct compat_vpudrv_buffer_t {
@@ -525,36 +524,6 @@ long rtd13xxe_compat_vpu_ioctl(struct file *filp, unsigned int cmd, unsigned lon
 	case COMPAT_VDI_IOCTL_GET_RTK_CLK_SELECT:
 	{
 		return  -ENOIOCTLCMD;
-	}
-	break;
-	case COMPAT_VDI_IOCTL_SET_RTK_DOVI_FLAG:
-	{
-		compat_vpudrv_dovi_info_t data32;
-		vpudrv_dovi_info_t doviInfo;
-
-		ret = copy_from_user(&data32, compat_ptr(arg), sizeof(data32));
-		if (ret)
-			return -EFAULT;
-
-		doviInfo = (vpudrv_dovi_info_t) {
-			.core_idx = data32.core_idx,
-			.inst_idx = data32.inst_idx,
-			.enable   = data32.enable,
-		};
-
-		doviInfo.enable = pu_set_dovi_flag(doviInfo.core_idx,
-						   doviInfo.inst_idx,
-						   doviInfo.enable);
-
-		data32 = (compat_vpudrv_dovi_info_t) {
-			.core_idx = doviInfo.core_idx,
-			.inst_idx = doviInfo.inst_idx,
-			.enable   = doviInfo.enable,
-		};
-
-		ret = copy_to_user(compat_ptr(arg), &data32, sizeof(data32));
-		if (ret)
-			return -EFAULT;
 	}
 	break;
 	case COMPAT_VDI_IOCTL_GET_RTK_SUPPORT_TYPE:

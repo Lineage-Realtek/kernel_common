@@ -47,6 +47,7 @@
 #include <linux/clk.h>
 #include <linux/reset.h>
 #include <linux/dma-map-ops.h>
+#include <linux/vmalloc.h>
 #include <soc/realtek/memory.h>
 #include <soc/realtek/rtk_media_heap.h>
 
@@ -56,7 +57,6 @@
 
 #include "ve1.h"
 #include "compat_ve1.h"
-#include "puwrap.h"
 
 //#define ENABLE_DEBUG_MSG
 #ifdef ENABLE_DEBUG_MSG
@@ -141,6 +141,9 @@ static vpudrv_buffer_t s_vpu_register = {0};
 
 static atomic_t s_interrupt_flag_ve1;
 static wait_queue_head_t s_interrupt_wait_q_ve1;
+#define MAX_INTERRUPT_QUEUE 16
+typedef struct kfifo kfifo_t;
+static kfifo_t s_interrupt_pending_q_ve1;
 
 static spinlock_t s_vpu_lock = __SPIN_LOCK_UNLOCKED(s_vpu_lock);
 static DEFINE_SEMAPHORE(s_vpu_sem);
@@ -250,13 +253,10 @@ static void vpu_setup_mmu(void)
 
 int rtd13xxe_vpu_alloc_dma_buffer(vpudrv_buffer_t *vb)
 {
-	unsigned int ret;
-
 	if (!vb)
 		return -1;
 
 #ifdef VPU_SUPPORT_RESERVED_VIDEO_MEMORY
-	UNUSED_PARAMETER(ret);
 	vb->phys_addr = (unsigned long)vmem_alloc(&s_vmem, vb->size, 0);
 	if ((unsigned long)vb->phys_addr  == (unsigned long)-1) {
 		pr_err("%s Physical memory allocation error size=%d\n", DEV_NAME, vb->size);
@@ -265,13 +265,12 @@ int rtd13xxe_vpu_alloc_dma_buffer(vpudrv_buffer_t *vb)
 
 	vb->base = (unsigned long)(s_video_memory.base + (vb->phys_addr - s_video_memory.phys_addr));
 #else
-	UNUSED_PARAMETER(ret);
-#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
+	mutex_lock(&p_vpu_dev->mutex);
 	rheap_setup_dma_pools(s_vpu_dev.this_device, "rtk_media_heap",
 				to_heapflag(vb->mem_type), __func__);
-#endif
 
 	vb->base = (unsigned long)dma_alloc_coherent(s_vpu_dev.this_device, PAGE_ALIGN(vb->size), (dma_addr_t *) (&vb->phys_addr), GFP_DMA | GFP_KERNEL);
+	mutex_unlock(&p_vpu_dev->mutex);
 	if ((void *)(vb->base) == NULL) {
 		pr_err("%s Physical memory allocation error size=%d\n", DEV_NAME, vb->size);
 		return -1;
@@ -285,13 +284,10 @@ int rtd13xxe_vpu_alloc_dma_buffer(vpudrv_buffer_t *vb)
 __maybe_unused
 static int vpu_alloc_dma_buffer2(vpudrv_buffer_t *vb)
 {
-	unsigned int ret;
-
 	if (!vb)
 		return -1;
 
 #ifdef VPU_SUPPORT_RESERVED_VIDEO_MEMORY
-	UNUSED_PARAMETER(ret);
 	vb->phys_addr = (unsigned long)vmem_alloc(&s_vmem, vb->size, 0);
 	if ((unsigned long)vb->phys_addr  == (unsigned long)-1) {
 		pr_err("%s Physical memory allocation error size=%d\n", DEV_NAME, vb->size);
@@ -300,13 +296,12 @@ static int vpu_alloc_dma_buffer2(vpudrv_buffer_t *vb)
 
 	vb->base = (unsigned long)(s_video_memory.base + (vb->phys_addr - s_video_memory.phys_addr));
 #else
-	UNUSED_PARAMETER(ret);
-#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
+	mutex_lock(&p_vpu_dev->mutex);
 	rheap_setup_dma_pools(s_vpu_dev.this_device, "rtk_media_heap",
 				to_heapflag(vb->mem_type), __func__);
-#endif
 
 	vb->base = (unsigned long)dma_alloc_coherent(s_vpu_dev.this_device, PAGE_ALIGN(vb->size), (dma_addr_t *) (&vb->phys_addr), GFP_DMA | GFP_KERNEL);
+	mutex_unlock(&p_vpu_dev->mutex);
 	if ((void *)(vb->base) == NULL) {
 		pr_err("%s Physical memory allocation error size=%d\n", DEV_NAME, vb->size);
 		return -1;
@@ -319,6 +314,9 @@ static int vpu_alloc_dma_buffer2(vpudrv_buffer_t *vb)
 
 void rtd13xxe_vpu_free_dma_buffer(vpudrv_buffer_t *vb)
 {
+	vpudrv_buffer_pool_t *vbp;
+	unsigned long base_in_vbp = 0;
+
 	if (!vb)
 		return;
 
@@ -327,8 +325,24 @@ void rtd13xxe_vpu_free_dma_buffer(vpudrv_buffer_t *vb)
 		vmem_free(&s_vmem, vb->phys_addr, 0);
 #else
 	if (vb->base) {
-		DPRINTK("%s [%d]rtd13xxe_vpu_free_dma_buffer.base:0x%lx.phys_addr:0x%lx\n",DEV_NAME,__LINE__,vb->base,vb->phys_addr);
-		dma_free_coherent(s_vpu_dev.this_device, PAGE_ALIGN(vb->size), (void *)vb->base, vb->phys_addr);
+		spin_lock(&s_vpu_lock);
+		list_for_each_entry(vbp, &s_vbp_head, list) {
+			if (vbp->vb.phys_addr == vb->phys_addr) {
+				base_in_vbp = vbp->vb.base;
+				break;
+			}
+		}
+		spin_unlock(&s_vpu_lock);
+		if (base_in_vbp == 0) {
+			pr_err("%d.%s.no match vbp->vb.phys_addr:%lx.size:%d",
+				__LINE__, __func__,
+				vb->phys_addr, vb->size);
+			base_in_vbp = vb->base;
+		}
+		DPRINTK("%d.%s.base_in_vbp:0x%px.vb->size:%d(maybe not 4096 align)\n",
+			__LINE__, __func__,
+			(void *)(base_in_vbp), vb->size);
+		dma_free_coherent(s_vpu_dev.this_device, PAGE_ALIGN(vb->size), (void *)base_in_vbp, vb->phys_addr);
 	}
 #endif /* VPU_SUPPORT_RESERVED_VIDEO_MEMORY */
 }
@@ -352,15 +366,6 @@ static int rtd13xxe_vpu_free_instances(struct file *filp)
 
 	list_for_each_entry_safe(vil, n, &s_inst_list_head, list) {
 		if (vil->filp == filp) {
-			int i, j;
-			for (i = 0; i < MAX_NUM_INSTANCE; i++) /* reset dovi flag */
-			{
-				for (j = 0; j < MAX_NUM_VPU_CORE; j++)
-				{
-					pu_set_dovi_flag(j, i, 0);
-				}
-			}
-
 			vip_base = (void *)(s_instance_pool.base + (instance_pool_size_per_core*vil->core_idx));
 			DPRINTK("%s rtd13xxe_vpu_free_instances detect instance crash instIdx=%d, coreIdx=%d, vip_base=%p, instance_pool_size_per_core=%d\n", DEV_NAME, (int)vil->inst_idx, (int)vil->core_idx, vip_base, (int)instance_pool_size_per_core);
 			vip = (vpudrv_instance_pool_t *)vip_base;
@@ -434,7 +439,11 @@ static irqreturn_t ve1_irq_handler(int irq, void *dev_id)
 		interrupt_reason_ve1 = ReadVpuRegister(BIT_INT_REASON, core);
 		WriteVpuRegister(BIT_INT_REASON, 0, core);
 		WriteVpuRegister(BIT_INT_CLEAR, 0x1, core);
+		if (interrupt_reason_ve1 == 0) {
+			pr_err("%s %d.DHCFAE-12940.interrupt_reason_ve1:%d\n",DEV_NAME,__LINE__,interrupt_reason_ve1);
+		}
 	}
+
 
 	//DPRINTK("%s VE1 intr_reason: 0x%08lx\n", DEV_NAME, dev->interrupt_reason_ve1);
 
@@ -443,7 +452,13 @@ static irqreturn_t ve1_irq_handler(int irq, void *dev_id)
 
 	if (vpu_int_sts_ve1) {
 		if (core == 0) {
-			dev->interrupt_reason_ve1 = interrupt_reason_ve1;
+			//dev->interrupt_reason_ve1 = interrupt_reason_ve1;
+			if (!kfifo_is_full(&s_interrupt_pending_q_ve1)) {
+				kfifo_in(&s_interrupt_pending_q_ve1, &interrupt_reason_ve1, sizeof(unsigned long));
+			}
+			else {
+				pr_err("%s %d.kfifo_is_full kfifo_count=%d.reason:0x%lx\n",DEV_NAME,__LINE__,kfifo_len(&s_interrupt_pending_q_ve1),interrupt_reason_ve1);
+			}
 			atomic_set(&s_interrupt_flag_ve1, 1);
 			wake_up_interruptible(&s_interrupt_wait_q_ve1);
 		}
@@ -600,20 +615,71 @@ void rtd13xxe_vpu_free_mem(vpudrv_buffer_t *vb)
 int rtd13xxe_vpu_wait_init(vpu_drv_context_t *dev, vpudrv_intr_info_t *info)
 {
 	int ret = 0;
+	unsigned long intr_reason_in_q;
+	int interrupt_flag_in_q;
 
 	if (info->core_idx == 0) {
+#ifdef USE_HRTIMEOUT_INSTEAD_OF_TIMEOUT
+		ktime_t ktime;
+		unsigned long delay_in_ms = 1L;
+		ktime = ktime_set(0, MS_TO_NS(delay_in_ms));
+		//ktime = ktime_set(0, MS_TO_NS((u64)info.timeout));
+#endif /* USE_HRTIMEOUT_INSTEAD_OF_TIMEOUT */
+
+		if (dev->interrupt_reason_ve1 != 0)
+		{
+			pr_err("%s %d.strange.dev->r:0x%lx.\n",DEV_NAME,__LINE__,dev->interrupt_reason_ve1);
+		}
+
+		intr_reason_in_q = 0;
+		interrupt_flag_in_q = kfifo_out(&s_interrupt_pending_q_ve1, &intr_reason_in_q, sizeof(unsigned long));
+		//pr_info("%s %d.interrupt_flag_in_q:%d.intr_reason_in_q:0x%lx.kfifo_count=%d\n",DEV_NAME,__LINE__,interrupt_flag_in_q,intr_reason_in_q,kfifo_len(&s_interrupt_pending_q_ve1));
+		if (interrupt_flag_in_q > 0)
+		{
+			//pr_info("%s %d.interrupt_flag_in_q:%d.intr_reason_in_q:0x%lx.kfifo_count=%d\n",DEV_NAME,__LINE__,interrupt_flag_in_q,intr_reason_in_q,kfifo_len(&s_interrupt_pending_q_ve1));
+			dev->interrupt_reason_ve1 = intr_reason_in_q;
+			goto INTERRUPT_REMAIN_IN_QUEUE;
+		}
+		else {
+			dev->interrupt_reason_ve1 = 0;
+		}
+
 		smp_rmb();
+#ifdef USE_HRTIMEOUT_INSTEAD_OF_TIMEOUT
+		ret = wait_event_interruptible_hrtimeout(s_interrupt_wait_q_ve1, atomic_read(&s_interrupt_flag_ve1) != 0, ktime);
+		if (ret) {
+			//pr_info("%s %d.timeout\n",DEV_NAME,__LINE__);
+			return -ETIME;
+		}
+#else /* USE_HRTIMEOUT_INSTEAD_OF_TIMEOUT */
 		ret = wait_event_interruptible_timeout(s_interrupt_wait_q_ve1,
 						       atomic_read(&s_interrupt_flag_ve1) != 0,
 						       msecs_to_jiffies(info->timeout));
-		if (!ret)
+		if (!ret) {
+			//pr_err("%s %d.timeout\n",DEV_NAME,__LINE__);
 			return -ETIME;
+		}
+#endif /* USE_HRTIMEOUT_INSTEAD_OF_TIMEOUT */
 
-		if (signal_pending(current))
+		if (signal_pending(current)) {
+			//pr_err("%s %d.signal_pending\n",DEV_NAME,__LINE__);
 			return -ERESTARTSYS;
+		}
 
-		atomic_set(&s_interrupt_flag_ve1, 0);
+		intr_reason_in_q = 0;
+		interrupt_flag_in_q = kfifo_out(&s_interrupt_pending_q_ve1, &intr_reason_in_q, sizeof(unsigned long));
+		//pr_info("%s %d.interrupt_flag_in_q:%d.intr_reason_in_q:0x%lx.kfifo_count=%d\n",DEV_NAME,__LINE__,interrupt_flag_in_q,intr_reason_in_q,kfifo_len(&s_interrupt_pending_q_ve1));
+		if (interrupt_flag_in_q > 0) {
+			dev->interrupt_reason_ve1 = intr_reason_in_q;
+		}
+		else
+		{
+			pr_err("%s %d.strange.dev->r:0x%lx.\n",DEV_NAME,__LINE__,dev->interrupt_reason_ve1);
+		}
+
+INTERRUPT_REMAIN_IN_QUEUE:
 		info->intr_reason = dev->interrupt_reason_ve1;
+		atomic_set(&s_interrupt_flag_ve1, 0);
 		dev->interrupt_reason_ve1 = 0;
 		ret = 0;
 	}
@@ -1024,28 +1090,6 @@ static long vpu_ioctl(struct file *filp, u_int cmd, u_long arg)
 	break;
 	case VDI_IOCTL_GET_RTK_ASIC_REVISION:
 		return -ENOIOCTLCMD;
-	case VDI_IOCTL_SET_RTK_DOVI_FLAG:
-	{
-		vpudrv_dovi_info_t doviInfo;
-
-		DPRINTK("%s [+]VDI_IOCTL_SET_RTK_DOVI_FLAG\n", DEV_NAME);
-
-		ret = copy_from_user(&doviInfo, (vpudrv_dovi_info_t *)arg,
-				     sizeof(vpudrv_dovi_info_t));
-		if (ret)
-			return -EFAULT;
-
-		doviInfo.enable = pu_set_dovi_flag(
-			doviInfo.core_idx, doviInfo.inst_idx, doviInfo.enable);
-
-		ret = copy_to_user((vpudrv_dovi_info_t *)arg, &doviInfo,
-						   sizeof(vpudrv_dovi_info_t));
-		if (ret)
-			return -EFAULT;
-
-		DPRINTK("%s [-]VDI_IOCTL_SET_RTK_DOVI_FLAG doviInfo.core_idx:%d, doviInfo.inst_idx:%d, doviInfo.value:%d\n", DEV_NAME, doviInfo.core_idx, doviInfo.inst_idx, doviInfo.enable);
-	}
-	break;
 	case VDI_IOCTL_GET_TOTAL_INSTANCE_NUM:
 	{
 		vpudrv_inst_info_t inst_info;
@@ -1185,7 +1229,6 @@ static int vpu_release(struct inode *inode, struct file *filp)
 #ifdef USE_VMALLOC_FOR_INSTANCE_POOL_MEMORY
 				vfree((const void *)s_instance_pool.base);
 #else
-				pu_unmap_kernel_buffer(s_instance_pool.base, s_instance_pool.phys_addr);
 				rtd13xxe_vpu_free_dma_buffer(&s_instance_pool);
 #endif /* USE_VMALLOC_FOR_INSTANCE_POOL_MEMORY */
 				s_instance_pool.base = 0;
@@ -1311,6 +1354,7 @@ static int vpu_probe(struct platform_device *pdev)
 #if 0 //Fuchun disable 20160204, set clock gating by vdi.c
 	unsigned int val = 0;
 #endif
+	int ret = 0;
 
 	pr_info("%s vpu_probe\n", DEV_NAME);
 
@@ -1335,13 +1379,15 @@ static int vpu_probe(struct platform_device *pdev)
 	s_vpu_dev.this_device->coherent_dma_mask = DMA_BIT_MASK(32);
 	s_vpu_dev.this_device->dma_mask = (u64 *)&s_vpu_dev.this_device
 						->coherent_dma_mask;
-#if IS_ENABLED(CONFIG_DMABUF_HEAPS_REALTEK)
 	set_dma_ops(s_vpu_dev.this_device, &rheap_dma_ops);
-#endif
 
 	p_vpu_dev = &pdev->dev;
 
 	init_waitqueue_head(&s_interrupt_wait_q_ve1);
+	ret = kfifo_alloc(&s_interrupt_pending_q_ve1, MAX_INTERRUPT_QUEUE*sizeof(unsigned long), GFP_KERNEL);
+	if (ret) {
+		pr_err("%s %d.kfifo_alloc failed 0x%x\n",DEV_NAME,__LINE__,res); /* NOTE: device bug, prints res instead of ret */
+	}
 	s_common_memory.base = 0;
 	s_instance_pool.base = 0;
 
@@ -1430,7 +1476,6 @@ static int vpu_remove(struct platform_device *pdev)
 #ifdef USE_VMALLOC_FOR_INSTANCE_POOL_MEMORY
 		vfree((const void *)s_instance_pool.base);
 #else
-		pu_unmap_kernel_buffer(s_instance_pool.base, s_instance_pool.phys_addr);
 		rtd13xxe_vpu_free_dma_buffer(&s_instance_pool);
 #endif /* VPU_SUPPORT_PLATFORM_DRIVER_REGISTER */
 		s_instance_pool.base = 0;
@@ -1520,7 +1565,6 @@ static int vpu_suspend(struct device *pdev)
 #ifdef USE_VMALLOC_FOR_INSTANCE_POOL_MEMORY
 			vfree((const void *)s_instance_pool.base);
 #else
-			pu_unmap_kernel_buffer(s_instance_pool.base, s_instance_pool.phys_addr);
 			rtd13xxe_vpu_free_dma_buffer(&s_instance_pool);
 #endif /* USE_VMALLOC_FOR_INSTANCE_POOL_MEMORY */
 			s_instance_pool.base = 0;
@@ -1659,6 +1703,7 @@ static int rtk_ve1_runtime_resume(struct device *dev)
 	reset_control_deassert(rstc_iso_bist);
 
 	ve1_wrapper_setup((1 << 1) | 1);
+
 	return 0;
 }
 
