@@ -47,7 +47,7 @@ static void do_freelogo_work_func(struct kthread_work *work)
 		//pr_err("\033[1;33m"
 		//	"freelogo work. wait %d sec..."
 		//	"\033[m\n", max_run_time);
-		msleep_interruptible(sleep_interval*1000);
+		msleep(sleep_interval*1000);
 		max_run_time -= sleep_interval;
 	}
 
