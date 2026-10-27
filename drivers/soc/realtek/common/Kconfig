@@ -150,6 +150,14 @@ config RTK_SMCC
 	help
 	  Realtek SMCC driver
 
+config RTK_THERMAL_IPA_RESET
+	tristate "Realtek thermal IPA manual reset"
+	depends on THERMAL_GOV_POWER_ALLOCATOR
+	help
+	  Adds the trigger_reset module parameter; writing 1 to it clears
+	  the accumulated error (err_integral) of the power allocator
+	  governor of the cpu-thermal zone.
+
 config RTK_TP
 	tristate "Realtek TP Device Driver"
 	default y

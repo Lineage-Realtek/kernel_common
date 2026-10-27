@@ -33,6 +33,7 @@ obj-$(CONFIG_RTK_REFCLK)		+= rtk_refclk.o
 obj-$(CONFIG_RTK_SB2_INV)		+= rtk_sb2.o rtk_sb2_inv.o rtk_sb2_dbg.o
 obj-$(CONFIG_RTK_SMCC)			+= rtk_smcc.o
 obj-$(CONFIG_RTK_SW_SYNC)		+= rtk_sw_sync/
+obj-$(CONFIG_RTK_THERMAL_IPA_RESET)	+= rtk_ipa_reset.o
 obj-$(CONFIG_RTK_TP)			+= rtk_tp.o
 rtk-usb-manager-y			+= rtk_usb_manager.o
 obj-$(CONFIG_RTK_USB_CTRL_MANAGER)	+= rtk-usb-manager.o
