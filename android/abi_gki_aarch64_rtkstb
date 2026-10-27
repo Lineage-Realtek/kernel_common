@@ -1137,6 +1137,7 @@
 # required by rtk-thermal.ko
   of_thermal_get_trip_points
   of_thermal_is_trip_valid
+  thermal_zone_bind_cooling_device
   thermal_zone_of_sensor_register
   thermal_zone_of_sensor_unregister
 
