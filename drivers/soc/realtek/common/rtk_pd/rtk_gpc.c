@@ -30,8 +30,6 @@ struct rtk_gpc_cfg {
 	unsigned long flags;
 	unsigned int delay_us_sram;
 	unsigned int delay_us_reset;
-	const char **rstc_ids;
-	unsigned int n_rstc_ids;
 };
 
 #define GPC_FLAGS_HAS_VE_TOP_CTL    0x0001 /* VE_TOP sram is located in VE1 sram */
@@ -54,10 +52,6 @@ struct rtk_gpc_data {
 	void __iomem                 *base;
 	void __iomem                 *ctl5;
 	void __iomem                 *ctl8;
-	u32                          l2h_delay_cycle;
-	u32                          h2l_delay_cycle;
-	u32                          std_delay_cycle;
-	u32                          manual_mask;
 
 	struct generic_pm_domain     genpd;
 	struct reset_controller_dev  rcdev;
@@ -68,8 +62,6 @@ struct rtk_gpc_data {
 	struct reset_control         *rstn;
 	struct reset_control         *rstn_bist;
 	struct reset_control         *rstn_auto;
-	struct reset_control_bulk_data *rstcs;
-	u32                          n_rstcs;
 	const struct rtk_gpc_cfg     *cfg;
 	unsigned int                 iso_offset;
 	int                          power_state_should_sync;
@@ -96,11 +88,6 @@ static inline int is_pwrseq_v2(struct rtk_gpc_data *data)
 static inline int should_setup_delay(struct rtk_gpc_data *data)
 {
 	return !!(data->cfg->flags & GPC_FLAGS_SETUP_DELAYS);
-}
-
-static inline int iso_power_ignored(struct rtk_gpc_data *data)
-{
-	return !!(data->cfg->flags & GPC_FLAGS_IGNORE_ISO_PWR);
 }
 
 static inline int has_hwwdt_issue(struct rtk_gpc_data *data)
@@ -135,9 +122,6 @@ static void rtk_gpc_iso_set_power(struct rtk_gpc_data *data, int is_on)
 	const struct rtk_gpc_cfg *cfg = data->cfg;
 	unsigned int mask, val;
 
-	if (iso_power_ignored(data))
-		return;
-
 	mask = BIT(cfg->iso_bit);
 	val = is_on ? 0 : mask;
 
@@ -156,26 +140,30 @@ static void rtk_gpc_iso_power_off(struct rtk_gpc_data *data)
 	rtk_gpc_iso_set_power(data, 0);
 }
 
+/*
+ * NOTE: reconstructed from the RTD1325 device module. The device driver
+ * predates the BSP versions that read the delays from the device tree:
+ * - no realtek,{l2h,h2l,std}_delay_cycle / realtek,manual_mask
+ *   properties and no "delay:" message; the values below are fixed
+ * - the VE_TOP manual mask is written to SRAM_PWR3 only, SRAM_PWR2 is
+ *   not read back and cleared
+ * - no per-config reset lists (rstc_ids) and no IGNORE_ISO_PWR check
+ * - the RTD1625 table has no ve4 domain
+ *
+ * The comment also keeps the line numbers of the WARN and dynamic debug
+ * records below equal to the device build.
+ */
 static void rtk_gpc_sram_power_setup_config(struct rtk_gpc_data *data)
 {
-	if (data->l2h_delay_cycle)
-		writel(data->l2h_delay_cycle, data->base + SRAM_PWR0);
+	if (has_ve_top_ctl(data))
+		writel(0x00008000, data->base + SRAM_PWR3);
 
-	if (data->h2l_delay_cycle)
-		writel(data->h2l_delay_cycle, data->base + SRAM_PWR1);
-
-	if (data->manual_mask) {
-		u32 val, new_val;
-
-		writel(data->manual_mask, data->base + SRAM_PWR3);
-		val = readl(data->base + SRAM_PWR2);
-		new_val = val & ~data->manual_mask;
-		if (val != new_val)
-			writel(new_val, data->base + SRAM_PWR2);
+	if (should_setup_delay(data)) {
+		writel(0xf, data->base + SRAM_PWR0);
+		writel(0xf, data->base + SRAM_PWR1);
+		if (data->ctl8)
+			writel(0x32, data->ctl8);
 	}
-
-	if (data->std_delay_cycle && data->ctl8)
-		writel(data->std_delay_cycle, data->ctl8);
 }
 
 static int rtk_gpc_sram_power_ready(struct rtk_gpc_data *data)
@@ -260,57 +248,10 @@ static int rtk_gpc_get_clocks(struct rtk_gpc_data *data)
 	return 0;
 }
 
-#ifdef MODULE
-#define devm_reset_control_bulk_get_optional_exclusive_released __rstc_setup
-static int __rstc_setup(struct device *dev, int num_rstcs, struct reset_control_bulk_data *rstcs)
-{
-	int ret, i;
-
-	for (i = 0; i < num_rstcs; i++) {
-		rstcs[i].rstc = reset_control_get_optional_exclusive(dev, rstcs[i].id);
-		if (IS_ERR(rstcs[i].rstc)) {
-			ret = PTR_ERR(rstcs[i].rstc);
-			goto put;
-		}
-	}
-
-	for (i = num_rstcs - 1; i >= 0; i--) {
-		ret = reset_control_deassert(rstcs[i].rstc);
-		if (ret)
-			goto assert;
-	}
-
-	i = num_rstcs;
-	goto put;
-assert:
-	while (i < num_rstcs)
-		reset_control_assert(rstcs[i++].rstc);
-put:
-	while (i--)
-		reset_control_put(rstcs[i].rstc);
-
-	return ret;
-}
-#define reset_control_bulk_acquire(...) (0)
-#define reset_control_bulk_release(...) do { } while (0)
-#define reset_control_bulk_deassert(...) (0)
-#endif
-
 static int rtk_gpc_get_resets(struct rtk_gpc_data *data)
 {
 	struct device *dev = data->dev;
 	int ret;
-	int i;
-
-	if (data->rstcs) {
-		for (i = 0; i < data->n_rstcs; i++)
-			data->rstcs[i].id = data->cfg->rstc_ids[i];
-
-		ret = devm_reset_control_bulk_get_optional_exclusive_released(
-			dev, data->n_rstcs, data->rstcs);
-		if (ret)
-			return dev_err_probe(dev, ret, "failed in devm_reset_control_bulk_get_optional_exclusive_released()\n");
-	}
 
 	data->rstn = devm_reset_control_get_optional_exclusive(dev, "reset");
 	if (IS_ERR(data->rstn)) {
@@ -549,13 +490,6 @@ static int rtk_gpc_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	if (data->cfg->n_rstc_ids) {
-		data->n_rstcs = data->cfg->n_rstc_ids;
-		data->rstcs = devm_kcalloc(dev, data->n_rstcs, sizeof(*data->rstcs), GFP_KERNEL);
-		if (!data->rstcs)
-			return -ENOMEM;
-	}
-
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ctl");
 	data->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(data->base))
@@ -636,38 +570,9 @@ static int rtk_gpc_probe(struct platform_device *pdev)
 		atomic_notifier_chain_register(&panic_notifier_list, &data->pnb);
 	}
 
-	if (has_ve_top_ctl(data))
-		data->manual_mask = 0x00008000;
-	if (should_setup_delay(data)) {
-		data->l2h_delay_cycle = 0xf;
-		data->h2l_delay_cycle = 0xf;
-		data->std_delay_cycle = 0x32;
-	}
-
-	of_property_read_u32(np, "realtek,l2h_delay_cycle", &data->l2h_delay_cycle);
-	of_property_read_u32(np, "realtek,h2l_delay_cycle", &data->h2l_delay_cycle);
-	of_property_read_u32(np, "realtek,std_delay_cycle", &data->std_delay_cycle);
-	of_property_read_u32(np, "realtek,manual_mask", &data->manual_mask);
-	dev_info(dev, "delay: l2h=%#x, h2l=%#x, mm=%#x, std=%#x\n",
-		 data->l2h_delay_cycle, data->h2l_delay_cycle, data->manual_mask,
-		 data->std_delay_cycle);
-
 	rtk_gpc_sram_power_setup_config(data);
 
-	if (data->rstcs) {
-		ret = reset_control_bulk_acquire(data->n_rstcs, data->rstcs);
-		if (ret) {
-			dev_warn(dev, "failed in reset_control_bulk_acquire(), skip deassert\n");
-			goto done;
-		}
-		ret = reset_control_bulk_deassert(data->n_rstcs, data->rstcs);
-		if (ret)
-			dev_warn(dev, "failed in reset_control_bulk_deassert()\n");
-		reset_control_bulk_release(data->n_rstcs, data->rstcs);
-	}
-done:
-
-	return 0;
+	return ret;
 }
 
 #define GPC_SOC_DATA(_offset, _cfgs) \
@@ -755,16 +660,10 @@ static const struct rtk_gpc_cfg rtd1315e_gpc_cfgs[] = {
 };
 static const DEFINE_GPC_SOC_DATA(rtd1315e_soc_data, 0x300, rtd1315e_gpc_cfgs);
 
-static const char *rtd1625_ve1_rstc_ids[] = { "mmu", "mmu_func", "bist_common" };
-static const char *rtd1625_ve4_rstc_ids[] = { "bist_common", "bist_on" };
-
 static const struct rtk_gpc_cfg rtd1625_gpc_cfgs[] = {
-	{ .name = "ve1", .iso_bit = 0, .flags = GPC_FLAGS_PWRSEQ_V2 | GPC_FLAGS_SETUP_DELAYS,
-	  .rstc_ids = rtd1625_ve1_rstc_ids, .n_rstc_ids = ARRAY_SIZE(rtd1625_ve1_rstc_ids), },
+	GPC_CFG("ve1", 0, GPC_FLAGS_PWRSEQ_V2 | GPC_FLAGS_SETUP_DELAYS),
 	GPC_CFG("ve2", 1, 0),
 	GPC_CFG("gpu", 3, 0),
-	{ .name = "ve4", .iso_bit = 10, .flags =  GPC_FLAGS_IGNORE_ISO_PWR,
-	 .rstc_ids = rtd1625_ve4_rstc_ids, .n_rstc_ids = ARRAY_SIZE(rtd1625_ve4_rstc_ids), },
 	GPC_CFG_1("npu", 12, GPC_FLAGS_PWRSEQ_V2, 10, 10),
 };
 static const DEFINE_GPC_SOC_DATA(rtd1625_soc_data, 0x300, rtd1625_gpc_cfgs);
