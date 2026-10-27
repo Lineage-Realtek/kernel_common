@@ -690,7 +690,7 @@ exit:
 
 int rpc_set_mixing_idx(struct device *dev, struct rtk_snd_mixer *mixer)
 {
-	struct audio_rpc_aio_privateinfo_parameters_ext *rpc = NULL;
+	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
 	struct audio_rpc_privateinfo_returnval *res;
 	u32 ret = 0;
 	phys_addr_t dat;
@@ -711,10 +711,10 @@ int rpc_set_mixing_idx(struct device *dev, struct rtk_snd_mixer *mixer)
 		goto exit;
 	}
 	mutex_unlock(&dev->mutex);
-	rpc = (struct audio_rpc_aio_privateinfo_parameters_ext *)vaddr;
+	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
 
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters_ext));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters_ext));
+	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
+	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
 	offset = ALIGN(offset, 128); /* HIFI 128 align */
 
 	res = (struct audio_rpc_privateinfo_returnval *)((unsigned long)rpc + offset);
@@ -722,10 +722,10 @@ int rpc_set_mixing_idx(struct device *dev, struct rtk_snd_mixer *mixer)
 	rpc->instance_id = mixer->ao_agent_id;
 
 	rpc->argate_info[0] = 1;
-	rpc->argate_info[1] = sizeof(*rpc);
-
-	for (ch=0; ch<MAX_CAR_CH; ch++)
-		rpc->parameter[ch] = mixer->mixing_idx.mixing_channel[ch];
+	/* two 16-bit mixing indexes per word, as in rpc_ao_config_without_decoder() */
+	for (ch = 0; ch < MAX_CAR_CH / 2; ch++)
+		rpc->argate_info[1 + ch] = mixer->mixing_idx.mixing_channel[ch * 2] |
+			(mixer->mixing_idx.mixing_channel[ch * 2 + 1] << 16);
 
 	if (send_rpc(hifi_compr_ept_info,
 		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
@@ -787,126 +787,6 @@ int rpc_set_dec_volume(struct device *dev, int volume)
 
 	if (send_rpc(hifi_compr_ept_info,
 		     ENUM_KERNEL_RPC_VOLUME_CONTROL,
-		     dat,
-		     dat + offset,
-		     &ret)) {
-		pr_err("[ALSA %s %d fail]\n", __func__, __LINE__);
-		ret = -1;
-		goto exit;
-	}
-
-	if (ret != S_OK) {
-		pr_err("[ALSA %s %d fail]\n", __func__, __LINE__);
-		ret = -1;
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-	if (vaddr)
-		dma_free_coherent(dev, size, vaddr, dat);
-
-	return ret;
-}
-
-int rpc_set_dec_volume_config(struct device *dev, int steps, int direct, int id)
-{
-	struct audio_config_command *config = NULL;
-	unsigned int *res;
-	u32 ret = 0;
-	phys_addr_t dat;
-	unsigned long offset;
-	void *vaddr;
-	size_t size = SZ_4K;
-
-	mutex_lock(&dev->mutex);
-	rheap_setup_dma_pools(dev, "rtk_media_heap",
-			      RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
-			      RTK_FLAG_ACPUACC, __func__);
-
-	vaddr = dma_alloc_coherent(dev, size, &dat, GFP_KERNEL);
-	if (!vaddr) {
-		ret = -1;
-		mutex_unlock(&dev->mutex);
-		goto exit;
-	}
-	mutex_unlock(&dev->mutex);
-	config = (struct audio_config_command *)vaddr;
-
-	memset(config, 0, sizeof(struct audio_config_command));
-
-	config->msd_id = AUDIO_CONFIG_CMD_AO_DEC_VOLUME_CONFIG;
-	config->value[0] = steps;
-	config->value[1] = direct;
-	config->value[5] = id;
-
-	offset = get_rpc_alignment_offset(sizeof(struct audio_config_command));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	res = (unsigned int *)((unsigned long)config + offset);
-
-	if (send_rpc(hifi_compr_ept_info,
-		     ENUM_KERNEL_RPC_AUDIO_MULTI_AO_CONFIG,
-		     dat,
-		     dat + offset,
-		     &ret)) {
-		pr_err("[ALSA %s %d fail]\n", __func__, __LINE__);
-		ret = -1;
-		goto exit;
-	}
-
-	if (ret != S_OK) {
-		pr_err("[ALSA %s %d fail]\n", __func__, __LINE__);
-		ret = -1;
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-	if (vaddr)
-		dma_free_coherent(dev, size, vaddr, dat);
-
-	return ret;
-}
-
-int rpc_set_dec_volume_new(struct device *dev, int volume, int id)
-{
-	struct audio_config_command *config = NULL;
-	unsigned int *res;
-	u32 ret = 0;
-	phys_addr_t dat;
-	unsigned long offset;
-	void *vaddr;
-	size_t size = SZ_4K;
-
-	mutex_lock(&dev->mutex);
-	rheap_setup_dma_pools(dev, "rtk_media_heap",
-			      RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
-			      RTK_FLAG_ACPUACC, __func__);
-
-	vaddr = dma_alloc_coherent(dev, size, &dat, GFP_KERNEL);
-	if (!vaddr) {
-		ret = -1;
-		mutex_unlock(&dev->mutex);
-		goto exit;
-	}
-	mutex_unlock(&dev->mutex);
-	config = (struct audio_config_command *)vaddr;
-
-	memset(config, 0, sizeof(struct audio_config_command));
-	config->msd_id = AUDIO_CONFIG_CMD_AO_DEC_VOLUME;
-	config->value[0] = 100 - volume;
-	config->value[5] = id;
-
-	offset = get_rpc_alignment_offset(sizeof(struct audio_config_command));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	res = (unsigned int *)((unsigned long)config + offset);
-
-	if (send_rpc(hifi_compr_ept_info,
-		     ENUM_KERNEL_RPC_AUDIO_MULTI_AO_CONFIG,
 		     dat,
 		     dat + offset,
 		     &ret)) {

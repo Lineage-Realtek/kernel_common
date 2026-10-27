@@ -247,7 +247,7 @@ static struct i2c_driver fl3236_i2c_driver = {
 		.name = "rtk,fl3236",
 		.owner = THIS_MODULE,
 	},
-	.probe =    fl3236_i2c_probe,
+	.probe_new = fl3236_i2c_probe,
 //	.remove =   fl3236_i2c_remove,
 	.id_table = fl3236_i2c_id,
 };

@@ -1074,7 +1074,6 @@ static int snd_card_compr_open(struct snd_compr_stream *cstream)
 	}
 	rtk_stream->status = SNDRV_PCM_TRIGGER_STOP;
 
-	rpc_set_dec_volume_config(dev, 1, 0, rtk_stream->audio_out_id);
 	mixer->ao_agent_id = rtk_stream->audio_out_id;
 	/* Preparing the ion buffer for share memory 1 */
 	size = SZ_4K;
@@ -1936,10 +1935,7 @@ static void snd_rtk_dec_volume_work(struct work_struct *work)
 {
 	struct rtk_snd_mixer *mixer =
 			container_of(work, struct rtk_snd_mixer, work_dec_volume);
-	if (mixer->multi_ao)
-		rpc_set_dec_volume_new(mixer->dev, mixer->dec_volume, mixer->ao_agent_id);
-	else
-		rpc_set_dec_volume(mixer->dev, mixer->dec_volume);
+	rpc_set_dec_volume(mixer->dev, mixer->dec_volume);
 }
 
 static void snd_rtk_mixing_idx_work(struct work_struct *work)
@@ -2039,8 +2035,6 @@ static int rtk_compress_probe(struct platform_device *pdev)
 		pr_err("[%s add mixer fail]\n", __func__);
 		goto __nodev;
 	}
-
-	of_property_read_u32(np, "multi-ao", &mixer->multi_ao);
 
 	strncpy(card->driver, "rtk_snd_compr", sizeof(card->driver));
 	strncpy(card->shortname, "rtk_snd_compr", sizeof(card->shortname));

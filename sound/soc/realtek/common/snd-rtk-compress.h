@@ -268,6 +268,4 @@ int rpc_set_refclock(phys_addr_t paddr, void *vaddr, struct audio_rpc_refclock *
 int rpc_pp_init_pin_svc(phys_addr_t paddr, void *vaddr, int instance_id);
 int rpc_set_mixing_idx(struct device *dev, struct rtk_snd_mixer *mixer);
 int rpc_set_dec_volume(struct device *dev, int volume);
-int rpc_set_dec_volume_config(struct device *dev, int steps, int direct, int id);
-int rpc_set_dec_volume_new(struct device *dev, int volume, int id);
 #endif
