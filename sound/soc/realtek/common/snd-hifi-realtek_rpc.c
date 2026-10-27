@@ -161,7 +161,7 @@ exit:
 
 int rpc_put_share_memory_latency(phys_addr_t paddr, void *vaddr,
 				 void *p, void *p2,
-				 int dec_id, int ao_id, int ao_agent_id, int type)
+				 int dec_id, int ao_id, int type)
 {
 	struct audio_rpc_privateinfo_parameters *cmd = NULL;
 	struct audio_rpc_privateinfo_returnval *res;
@@ -170,8 +170,8 @@ int rpc_put_share_memory_latency(phys_addr_t paddr, void *vaddr,
 	phys_addr_t dat;
 	unsigned long offset;
 
-	pr_info("[%s ion_alloc p1 %x p2 %x dec_id %d ao_id %d ao_agent_id %d type %d\n", __func__,
-		(u32)((long)p), (u32)((long)p2), dec_id, ao_id, ao_agent_id, type);
+	pr_info("[%s ion_alloc p1 %x p2 %x dec_id %d ao_id %d type %d\n", __func__,
+		(u32)((long)p), (u32)((long)p2), dec_id, ao_id, type);
 
 	cmd = (struct audio_rpc_privateinfo_parameters *)vaddr;
 	dat = paddr;
@@ -182,7 +182,6 @@ int rpc_put_share_memory_latency(phys_addr_t paddr, void *vaddr,
 	res = (struct audio_rpc_privateinfo_returnval *)((unsigned long)cmd + offset);
 	memset(cmd, 0, sizeof(struct audio_rpc_privateinfo_parameters));
 
-	cmd->instance_id = ao_agent_id;  // ??????
 	cmd->type = type;
 	cmd->private_info[0] = (u32)(long)p;
 	cmd->private_info[1] = magic_num;
@@ -253,7 +252,7 @@ int rpc_get_ao_flash_pin(phys_addr_t paddr, void *vaddr, int ao_agent_id)
 
 	ret = res->private_info[0];
 
-	if (ret < FLASH_AUDIO_PIN_1 || ret > FLASH_AUDIO_PIN_8) {
+	if (ret < FLASH_AUDIO_PIN_1 || ret > FLASH_AUDIO_PIN_3) {
 		pr_err("[ALSA %s %d RPC %d fail]\n", __func__, __LINE__, ret);
 		ret = -1;
 	}
@@ -263,31 +262,18 @@ exit:
 	return ret;
 }
 
-int rpc_set_ao_flash_volume(struct device *dev, int agent_id, int pin_id, int volume)
+int rpc_set_ao_flash_volume(phys_addr_t paddr, void *vaddr,
+			    struct snd_rtk_pcm *dpcm)
 {
 	struct audio_rpc_privateinfo_parameters *cmd = NULL;
 	struct audio_rpc_privateinfo_returnval *res;
 	u32 rpc_ret;
 	int ret = -1;
-	void *vaddr;
 	phys_addr_t dat;
 	unsigned long offset;
-	size_t size = SZ_4K;
-
-	mutex_lock(&dev->mutex);
-	rheap_setup_dma_pools(dev, "rtk_media_heap",
-			      RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
-			      RTK_FLAG_ACPUACC, __func__);
-
-	vaddr = dma_alloc_coherent(dev, size, &dat, GFP_KERNEL);
-	if (!vaddr) {
-		ret = -1;
-		mutex_unlock(&dev->mutex);
-		goto exit;
-	}
-	mutex_unlock(&dev->mutex);
 
 	cmd = (struct audio_rpc_privateinfo_parameters *)vaddr;
+	dat = paddr;
 
 	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_privateinfo_parameters));
 	offset = ALIGN(offset, 128); /* HIFI 128 Align */
@@ -295,10 +281,10 @@ int rpc_set_ao_flash_volume(struct device *dev, int agent_id, int pin_id, int vo
 	res = (struct audio_rpc_privateinfo_returnval *)((unsigned long)cmd + offset);
 	memset(cmd, 0, sizeof(struct audio_rpc_privateinfo_parameters));
 
-	cmd->instance_id = agent_id;
+	cmd->instance_id = dpcm->ao_agent_id;
 	cmd->type = ENUM_PRIVATEINFO_AUDIO_CONTROL_FLASH_VOLUME;
-	cmd->private_info[0] = pin_id;
-	cmd->private_info[1] = 31 - volume;
+	cmd->private_info[0] = dpcm->ao_pin_id;
+	cmd->private_info[1] = 31 - dpcm->volume;
 
 	if (send_rpc(hifi_ept_info,
 		     ENUM_KERNEL_RPC_PRIVATEINFO,
@@ -314,163 +300,7 @@ int rpc_set_ao_flash_volume(struct device *dev, int agent_id, int pin_id, int vo
 		goto exit;
 	}
 
-	pr_info("[ALSA set AO_pin %d volume %d]\n", pin_id, volume);
-	ret = 0;
-exit:
-	if (vaddr)
-		dma_free_coherent(dev, size, vaddr, dat);
-	return ret;
-}
-
-int rpc_set_btpcm_config(phys_addr_t paddr, void *vaddr, struct rtk_snd_mixer *mixer)
-{
-	struct rpc_btpcm_config *cmd = NULL;
-	char *res;
-	u32 rpc_ret;
-	int ret = -1;
-	phys_addr_t dat;
-	unsigned long offset;
-
-	cmd = (struct rpc_btpcm_config *)vaddr;
-	dat = paddr;
-
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_btpcm_config));
-	offset = ALIGN(offset, 128); /* HIFI 128 Align */
-
-	res = (char *)((unsigned long)cmd + offset);
-	memset(cmd, 0, sizeof(struct rpc_btpcm_config));
-
-	cmd->pcm_clk_fs = 256000;
-	cmd->pcm_bits = 16;
-	cmd->format = ENUM_BTPCM_FMT_LINEAR;
-	cmd->frame_thld = 0xf;
-	cmd->slave_mode = mixer->btpcm_mode;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_SET_BTPCM_CFG,
-		     dat,
-		     dat + offset,
-		     &rpc_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (rpc_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	ret = 0;
-exit:
-	return ret;
-}
-
-int rpc_set_btpcm_queue_buf(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm)
-{
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	u32 RPC_ret;
-	unsigned int offset;
-	int ret = -1;
-	phys_addr_t dat;
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-	dat = paddr;
-
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	rpc->instance_id = dpcm->ai_agent_id;
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_PRIVATEINFO;
-	rpc->argate_info[0] = ENUM_AI_PRIVATE_QUEUE_DELAY;
-	rpc->argate_info[1] = 1;
-	rpc->argate_info[2] = dpcm->mixer->btpcm_queue_buf;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-
-	return ret;
-
-}
-
-int rpc_set_tdmin_config(phys_addr_t paddr, void *vaddr, struct snd_pcm_runtime *runtime)
-{
-	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
-	struct rpc_tdmin_config *cmd = NULL;
-	char *res;
-	u32 rpc_ret;
-	int ret = -1;
-	phys_addr_t dat;
-	unsigned long offset;
-
-	cmd = (struct rpc_tdmin_config *)vaddr;
-	dat = paddr;
-
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_tdmin_config));
-	offset = ALIGN(offset, 128); /* HIFI 128 Align */
-
-	res = (char *)((unsigned long)cmd + offset);
-	memset(cmd, 0, sizeof(struct rpc_tdmin_config));
-
-	if (dpcm->source_in == ENUM_AIN_TDM_IN) {
-		cmd->slot = 0;
-		if (!mixer->ai_tdm0_mode) {
-			cmd->slave_mode = 1;
-			cmd->pin_share = ENUM_TDM_PIN_SHARE_AO_TDM_0;
-		}
-	} else if (dpcm->source_in == ENUM_AIN_TDM1_IN) {
-		cmd->slot = 1;
-		if (!mixer->ai_tdm1_mode) {
-			cmd->slave_mode = 1;
-			cmd->pin_share = ENUM_TDM_PIN_SHARE_AO_TDM_1;
-		}
-	} else if (dpcm->source_in == ENUM_AIN_TDM2_IN) {
-		cmd->slot = 2;
-		if (!mixer->ai_tdm2_mode) {
-			cmd->slave_mode = 1;
-			cmd->pin_share = ENUM_TDM_PIN_SHARE_AO_TDM_2;
-		}
-	}
-	cmd->version = 1;
-	cmd->data_format = ENUM_TDM_FMT_MODE_A;
-	cmd->bclk = 256;
-	cmd->lrck = 256;
-	cmd->sample_rate = runtime->rate;
-	cmd->i2s_channel_len = 32;
-	cmd->channel_num = runtime->channels;
-	cmd->data_len = 24;
-	cmd->tdm_channel_len = 32;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_SET_AI_TDM_CFG,
-		     dat,
-		     dat + offset,
-		     &rpc_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (rpc_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
+	pr_info("[ALSA set AO_pin %d volume %d]\n", dpcm->ao_pin_id, dpcm->volume);
 	ret = 0;
 exit:
 	return ret;
@@ -789,64 +619,11 @@ exit:
 	return ret;
 }
 
-static void rpc_set_channel_map(int ch, char *p)
-{
-	switch (ch) {
-	case 1:
-		p[0] = ENUM_AUDIO_LEFT_FRONT_INDEX;
-		break;
-	case 2:
-		p[0] = ENUM_AUDIO_LEFT_FRONT_INDEX;
-		p[1] = ENUM_AUDIO_RIGHT_FRONT_INDEX;
-		break;
-	case 3:
-		p[0] = ENUM_AUDIO_LEFT_FRONT_INDEX;
-		p[1] = ENUM_AUDIO_RIGHT_FRONT_INDEX;
-		p[2] = ENUM_AUDIO_CENTER_FRONT_INDEX;
-		break;
-	case 4:
-		p[0] = ENUM_AUDIO_LEFT_FRONT_INDEX;
-		p[1] = ENUM_AUDIO_RIGHT_FRONT_INDEX;
-		p[2] = ENUM_AUDIO_LEFT_SURROUND_REAR_INDEX;
-		p[3] = ENUM_AUDIO_RIGHT_SURROUND_REAR_INDEX;
-		break;
-	case 5:
-		p[0] = ENUM_AUDIO_LEFT_FRONT_INDEX;
-		p[1] = ENUM_AUDIO_RIGHT_FRONT_INDEX;
-		p[2] = ENUM_AUDIO_CENTER_FRONT_INDEX;
-		p[3] = ENUM_AUDIO_LEFT_SURROUND_REAR_INDEX;
-		p[4] = ENUM_AUDIO_RIGHT_SURROUND_REAR_INDEX;
-		break;
-	case 6:
-		p[0] = ENUM_AUDIO_LEFT_FRONT_INDEX;
-		p[1] = ENUM_AUDIO_RIGHT_FRONT_INDEX;
-		p[2] = ENUM_AUDIO_CENTER_FRONT_INDEX;
-		p[3] = ENUM_AUDIO_LFE_INDEX;
-		p[4] = ENUM_AUDIO_LEFT_SURROUND_REAR_INDEX;
-		p[5] = ENUM_AUDIO_RIGHT_SURROUND_REAR_INDEX;
-		break;
-	case 7:
-	case 8:
-		p[0] = ENUM_AUDIO_LEFT_FRONT_INDEX;
-		p[1] = ENUM_AUDIO_RIGHT_FRONT_INDEX;
-		p[2] = ENUM_AUDIO_CENTER_FRONT_INDEX;
-		p[3] = ENUM_AUDIO_LFE_INDEX;
-		p[4] = ENUM_AUDIO_LEFT_SURROUND_REAR_INDEX;
-		p[5] = ENUM_AUDIO_RIGHT_SURROUND_REAR_INDEX;
-		p[6] = ENUM_AUDIO_LEFT_OUTSIDE_FRONT_INDEX;
-		p[7] = ENUM_AUDIO_RIGHT_OUTSIDE_FRONT_INDEX;
-		break;
-	default:
-		pr_err("channel not support %d\n", ch);
-		break;
-	}
-}
-
 int rpc_ao_config_without_decoder(phys_addr_t paddr, void *vaddr,
 				  struct snd_pcm_runtime *runtime)
 {
 	struct snd_rtk_pcm *dpcm = runtime->private_data;
-	struct audio_rpc_aio_privateinfo_parameters_ext *cmd = NULL;
+	struct audio_rpc_aio_privateinfo_parameters *cmd = NULL;
 	struct audio_rpc_privateinfo_returnval *res;
 	int ret = -1;
 	int offset, tmp, ch;
@@ -859,10 +636,10 @@ int rpc_ao_config_without_decoder(phys_addr_t paddr, void *vaddr,
 		sample_rate = 24000;
 
 
-	cmd = (struct audio_rpc_aio_privateinfo_parameters_ext *)vaddr;
+	cmd = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
 	dat = paddr;
 
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters_ext));
+	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
 	offset = ALIGN(offset, 128); /* HIFI 128 Align */
 
 	p = (char *)&cmd->argate_info[3];
@@ -880,23 +657,22 @@ int rpc_ao_config_without_decoder(phys_addr_t paddr, void *vaddr,
 	cmd->argate_info[1] |= tmp;
 
 	cmd->argate_info[2] = sample_rate;
-	rpc_set_channel_map(runtime->channels, p);
+	for (ch = 0; ch < runtime->channels; ++ch)
+		p[ch] = ch + 1;
 
 	/* config ao lpcm out delay and ao hw buffer delay */
 	cmd->argate_info[5] = (15 << 16);
 	cmd->argate_info[5] |= 20;
 
-	if (dpcm->set_channel_index) {
-		cmd->argate_info[3] = dpcm->channel_idx.index[0];
-		cmd->argate_info[4] = dpcm->channel_idx.index[1];
-	}
 	if (dpcm->set_mixing_index) {
 		/* Mixing Mode */
 		cmd->argate_info[7] = 1;
-		cmd->argate_info[8] = sizeof(*cmd);
 		/* setup mixing index */
-		for (ch=0; ch<MAX_CAR_CH; ch++)
-			cmd->parameter[ch] = dpcm->mixing_idx.mixing_channel[ch];
+		for (ch = 0; ch < 8; ch++) {
+			tmp = dpcm->mixing_idx.mixing_channel[ch * 2];
+			tmp |= dpcm->mixing_idx.mixing_channel[ch * 2 + 1] << 16;
+			cmd->argate_info[8 + ch] = tmp;
+		}
 	}
 
 	if (send_rpc(hifi_ept_info,
@@ -992,7 +768,7 @@ exit:
 
 int rpc_set_audio_delay(struct device *dev, struct rtk_snd_mixer *mixer)
 {
-	struct audio_rpc_privateinfo_parameters_ext *rpc = NULL;
+	struct audio_rpc_privateinfo_parameters *rpc = NULL;
 	struct audio_rpc_privateinfo_returnval *p_ret = NULL;
 	u32 ret = 0;
 	phys_addr_t dat;
@@ -1013,7 +789,7 @@ int rpc_set_audio_delay(struct device *dev, struct rtk_snd_mixer *mixer)
 		goto exit;
 	}
 	mutex_unlock(&dev->mutex);
-	rpc = (struct audio_rpc_privateinfo_parameters_ext *)vaddr;
+	rpc = (struct audio_rpc_privateinfo_parameters *)vaddr;
 
 	memset(rpc, 0, sizeof(struct audio_rpc_privateinfo_parameters));
 	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_privateinfo_parameters));
@@ -1022,13 +798,11 @@ int rpc_set_audio_delay(struct device *dev, struct rtk_snd_mixer *mixer)
 	p_ret = (struct audio_rpc_privateinfo_returnval *)((unsigned long)rpc + offset);
 	rpc->type = ENUM_PRIVATEINFO_AUDIO_CONFIG_CMD_AO_DELAY_INFO;
 
-	rpc->instance_id = mixer->ao_agent_id;
 	rpc->private_info[0] = mixer->delay_ctrl.mode;
 	rpc->private_info[1] = mixer->delay_ctrl.is_enable;
-	rpc->private_info[2] = sizeof(struct audio_rpc_privateinfo_parameters_ext);
 
 	for (i=0; i<MAX_DELAY_CH; i++)
-		rpc->parameter[i] = mixer->delay_ctrl.ch_delay_time[i];
+		rpc->private_info[i + 2] = mixer->delay_ctrl.ch_delay_time[i];
 
 	if (send_rpc(hifi_ept_info,
 		     ENUM_KERNEL_RPC_PRIVATEINFO,
@@ -1057,7 +831,7 @@ exit:
 
 int rpc_set_balance(struct device *dev, struct rtk_snd_mixer *mixer)
 {
-	struct audio_rpc_privateinfo_parameters_ext *rpc = NULL;
+	struct audio_rpc_privateinfo_parameters *rpc = NULL;
 	struct audio_rpc_privateinfo_returnval *p_ret = NULL;
 	u32 ret = 0;
 	phys_addr_t dat;
@@ -1078,18 +852,16 @@ int rpc_set_balance(struct device *dev, struct rtk_snd_mixer *mixer)
 		goto exit;
 	}
 	mutex_unlock(&dev->mutex);
-	rpc = (struct audio_rpc_privateinfo_parameters_ext *)vaddr;
+	rpc = (struct audio_rpc_privateinfo_parameters *)vaddr;
 
 	memset(rpc, 0, sizeof(struct audio_rpc_privateinfo_parameters));
 	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_privateinfo_parameters));
 	offset = ALIGN(offset, 128); /* HIFI 128 align */
 
 	p_ret = (struct audio_rpc_privateinfo_returnval *)((unsigned long)rpc + offset);
-	rpc->instance_id = mixer->ao_agent_id;
 	rpc->type = ENUM_PRIVATEINFO_AUDIO_AO_CHANNEL_VOLUME_LEVEL;
-	rpc->private_info[0] = sizeof(struct audio_rpc_privateinfo_parameters_ext);
 	for (i=0; i<MAX_CAR_CH; i++)
-		rpc->parameter[i] = mixer->balance[i];
+		rpc->private_info[i] = mixer->balance[i];
 
 	if (send_rpc(hifi_ept_info,
 		     ENUM_KERNEL_RPC_PRIVATEINFO,
@@ -1313,63 +1085,6 @@ exit:
 	return ret;
 }
 
-int rpc_set_volume_new(struct device *dev, int volume, int id)
-{
-	struct audio_config_command *config = NULL;
-	unsigned int *res;
-	u32 ret = 0;
-	phys_addr_t dat;
-	unsigned long offset;
-	void *vaddr;
-	size_t size = SZ_4K;
-
-	mutex_lock(&dev->mutex);
-	rheap_setup_dma_pools(dev, "rtk_media_heap",
-			      RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
-			      RTK_FLAG_ACPUACC, __func__);
-
-	vaddr = dma_alloc_coherent(dev, size, &dat, GFP_KERNEL);
-	if (!vaddr) {
-		ret = -1;
-		mutex_unlock(&dev->mutex);
-		goto exit;
-	}
-	mutex_unlock(&dev->mutex);
-	config = (struct audio_config_command *)vaddr;
-
-	memset(config, 0, sizeof(struct audio_config_command));
-	config->msd_id = AUDIO_CONFIG_CMD_VOLUME;
-	config->value[0] = 31 - volume;
-	config->value[5] = id;
-	offset = get_rpc_alignment_offset(sizeof(struct audio_config_command));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	res = (unsigned int *)((unsigned long)config + offset);
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AUDIO_MULTI_AO_CONFIG,
-		     dat,
-		     dat + offset,
-		     &ret)) {
-		pr_err("[ALSA %s %d fail]\n", __func__, __LINE__);
-		ret = -1;
-		goto exit;
-	}
-
-	if (ret != S_OK) {
-		pr_err("[ALSA %s %d fail]\n", __func__, __LINE__);
-		ret = -1;
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-	if (vaddr)
-		dma_free_coherent(dev, size, vaddr, dat);
-
-	return ret;
-}
 /* get AO volume */
 int rpc_get_volume(phys_addr_t paddr, void *vaddr)
 {
@@ -1451,66 +1166,24 @@ int rpc_ai_config_i2s_in(phys_addr_t paddr, void *vaddr,
 			 struct snd_rtk_cap_pcm *dpcm)
 {
 	struct audio_rpc_privateinfo_parameters *rpc = NULL;
-	struct audio_rpc_aio_privateinfo_parameters *rpc_aio = NULL;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
-	u32 RPC_ret, command;
+	u32 RPC_ret;
 	unsigned int offset;
 	int ret = -1;
 	phys_addr_t dat;
 
-	if (dpcm->source_in == ENUM_AIN_I2S) {
-		rpc = (struct audio_rpc_privateinfo_parameters *)vaddr;
-		memset(rpc, 0, sizeof(struct audio_rpc_privateinfo_parameters));
-		offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_privateinfo_parameters));
-		rpc->instance_id = dpcm->ai_agent_id;
-	} else {
-		rpc_aio = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-		memset(rpc_aio, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-		offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-		rpc_aio->instance_id = dpcm->ai_agent_id;
-	}
+	rpc = (struct audio_rpc_privateinfo_parameters *)vaddr;
 	dat = paddr;
+
+	memset(rpc, 0, sizeof(struct audio_rpc_privateinfo_parameters));
+	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_privateinfo_parameters));
 	offset = ALIGN(offset, 128); /* HIFI 128 align */
 
-	if (dpcm->source_in == ENUM_AIN_I2S ||
-		dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH) {
-		rpc->type = ENUM_PRIVATEINFO_AUDIO_AI_PAD_IN;
-		command = ENUM_KERNEL_RPC_PRIVATEINFO;
-		if (dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH)
-			rpc->private_info[0] = 8000;
-		else
-			rpc->private_info[0] = 48000;
-		rpc->private_info[1] = 0x11224466;
-		if (mixer->ai_i2s0_mode == ENUM_AI_I2S_SLAVE_ENFORCE)
-			rpc->private_info[2] = ENUM_AI_I2S_PIN_SLAVE_ENFORCE;
-		else
-			rpc->private_info[2] = mixer->ai_i2s0_mode;
-	} else {
-		rpc_aio->type = ENUM_PRIVATEINFO_AIO_AI_PRIVATEINFO;
-		if (dpcm->source_in == ENUM_AIN_I2S1_IN) {
-			rpc_aio->argate_info[0] = ENUM_AI_PRIVATE_I2S_1;
-			if (mixer->ai_i2s1_mode == ENUM_AI_I2S_SHARE)
-				rpc_aio->argate_info[3] = ENUM_AI_I2S_PIN_SHARE_AO_I2S1;
-			else if (mixer->ai_i2s1_mode == ENUM_AI_I2S_SLAVE_ENFORCE)
-				rpc_aio->argate_info[3] = ENUM_AI_I2S_PIN_SLAVE_ENFORCE;
-			else
-				rpc_aio->argate_info[3] = mixer->ai_i2s1_mode;
-		} else if (dpcm->source_in == ENUM_AIN_I2S2_IN) {
-			rpc_aio->argate_info[0] = ENUM_AI_PRIVATE_I2S_2;
-			if (mixer->ai_i2s2_mode == ENUM_AI_I2S_SHARE)
-				rpc_aio->argate_info[3] = ENUM_AI_I2S_PIN_SHARE_AO_I2S2;
-			else if (mixer->ai_i2s2_mode == ENUM_AI_I2S_SLAVE_ENFORCE)
-				rpc_aio->argate_info[3] = ENUM_AI_I2S_PIN_SLAVE_ENFORCE;
-			else
-				rpc_aio->argate_info[3] = mixer->ai_i2s2_mode;
-		}
-		rpc_aio->argate_info[1] = 48000;
-		rpc_aio->argate_info[2] = 0x11224466;
-		command = ENUM_KERNEL_RPC_AIO_PRIVATEINFO;
-	}
+	rpc->instance_id = dpcm->ai_agent_id;
+	rpc->type = ENUM_PRIVATEINFO_AUDIO_AI_PAD_IN;
+	rpc->private_info[0] = 48000;
 
 	if (send_rpc(hifi_ept_info,
-		     command,
+		     ENUM_KERNEL_RPC_PRIVATEINFO,
 		     dat,
 		     dat + offset,
 		     &RPC_ret)) {
@@ -1676,450 +1349,6 @@ exit:
 	return ret;
 }
 
-int rpc_ai_config_btpcm_in(phys_addr_t paddr, void *vaddr,
-			   struct snd_rtk_cap_pcm *dpcm)
-{
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
-	u32 RPC_ret;
-	unsigned int offset;
-	int ret = -1;
-	phys_addr_t dat;
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-	dat = paddr;
-
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	rpc->instance_id = dpcm->ai_agent_id;
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_PRIVATEINFO;
-	rpc->argate_info[0] = ENUM_AI_PRIVATE_BTPCM;
-	if (mixer->btpcm_dbg[1]) {
-		pr_info("%s dbg enable\n", __func__);
-		rpc->argate_info[1] = 0x23;
-	}
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-
-	return ret;
-}
-
-int rpc_ao_config_btpcm_out(phys_addr_t paddr, void *vaddr,
-			    struct snd_rtk_cap_pcm *dpcm)
-{
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
-	u32 RPC_ret;
-	unsigned int offset;
-	int ret = -1;
-	phys_addr_t dat;
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-	dat = paddr;
-
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	rpc->instance_id = dpcm->ao_agent_id;
-	rpc->type = ENUM_PRIVATEINFO_AIO_AO_BT_PCM_INFO;
-//	rpc->argate_info[0] = ENUM_AI_PRIVATE_BTPCM;
-	rpc->argate_info[1] = 2;
-	rpc->argate_info[2] = 16000;
-	rpc->argate_info[3] = 16;
-	if (mixer->btpcm_dbg[0]) {
-		pr_info("%s dbg enable\n", __func__);
-		rpc->argate_info[4] = 0x23;
-	}
-	rpc->argate_info[5] = mixer->btpcm_mic_ch;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-
-	return ret;
-}
-
-int rpc_ai_config_tdm_in(phys_addr_t paddr, void *vaddr,
-			   struct snd_rtk_cap_pcm *dpcm)
-{
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	u32 RPC_ret;
-	unsigned int offset;
-	int ret = -1;
-	phys_addr_t dat;
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-	dat = paddr;
-
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	rpc->instance_id = dpcm->ai_agent_id;
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_PRIVATEINFO;
-	if (dpcm->source_in == ENUM_AIN_TDM_IN)
-		rpc->argate_info[0] = ENUM_AI_PRIVATE_TDM;
-	else if (dpcm->source_in == ENUM_AIN_TDM1_IN)
-		rpc->argate_info[0] = ENUM_AI_PRIVATE_TDM_1;
-	else if (dpcm->source_in == ENUM_AIN_TDM2_IN)
-		rpc->argate_info[0] = ENUM_AI_PRIVATE_TDM_2;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-
-	return ret;
-}
-
-int rpc_ai_config_spdif_in(phys_addr_t paddr, void *vaddr,
-			   struct snd_rtk_cap_pcm *dpcm)
-{
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	u32 RPC_ret;
-	unsigned int offset;
-	int ret = -1;
-	phys_addr_t dat;
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-	dat = paddr;
-
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	rpc->instance_id = dpcm->ai_agent_id;
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_PRIVATEINFO;
-	rpc->argate_info[0] = ENUM_AI_PRIVATE_SPDIF_OPTICAL;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-
-	return ret;
-}
-
-int rpc_ai_config_analog_in(phys_addr_t paddr, void *vaddr,
-			    struct snd_pcm_runtime *runtime)
-{
-	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	struct audio_rpc_privateinfo_returnval *res;
-	struct audio_analog_hw_config *ana_config;
-	u32 RPC_ret;
-	unsigned int offset;
-	int ret = -1;
-	phys_addr_t dat;
-	int free_pin;
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-	dat = paddr;
-
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	res = (struct audio_rpc_privateinfo_returnval *)((unsigned long)rpc + offset);
-
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_ADC_ANALOG;
-	rpc->argate_info[0] = 0x1122eeff;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	free_pin = res->private_info[0] == 0 ? ENUM_AI_PRIVATE_ANGLOG
-		: res->private_info[0] == 1 ? ENUM_AI_PRIVATE_ANGLOG_1
-		: -1;
-	if (free_pin < 0) {
-		pr_err("[ALSA %s can't get free pin]\n", __func__);
-		return free_pin;
-	}
-
-	rpc->instance_id = dpcm->ai_agent_id;
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_PRIVATEINFO;
-	rpc->argate_info[0] = free_pin;
-	rpc->argate_info[1] = runtime->rate;
-	if (dpcm->source_in == ENUM_AIN_ANA1_IN) {
-		rpc->argate_info[2] = mixer->analog_in1_path[0];
-		mixer->analog_in1_path[1] = res->private_info[0];
-	}
-	if (dpcm->source_in == ENUM_AIN_ANA2_IN) {
-		rpc->argate_info[2] = mixer->analog_in2_path[0];
-		mixer->analog_in2_path[1] = res->private_info[0];
-	}
-	if (dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH) {
-		if (mixer->btpcm_in_path == 3) {
-			rpc->argate_info[2] = mixer->analog_in1_path[0];
-			mixer->analog_in1_path[1] = res->private_info[0];
-		} else if (mixer->btpcm_in_path == 4) {
-			rpc->argate_info[2] = mixer->analog_in2_path[0];
-			mixer->analog_in2_path[1] = res->private_info[0];
-		}
-	}
-	ana_config = (struct audio_analog_hw_config *)&rpc->argate_info[3];
-
-	if (dpcm->source_in == ENUM_AIN_ANA1_IN) {
-		ana_config->analog_gain_l = mixer->ana1_agc[0];
-		ana_config->analog_gain_r = mixer->ana1_agc[1];
-		ana_config->digital_gain_en = mixer->ana1_dgc[0];
-		ana_config->digital_gain_l = mixer->ana1_dgc[1];
-		ana_config->digital_gain_r = mixer->ana1_dgc[2];
-		ana_config->amic_differential_l = mixer->ana1_differential_en[0];
-		ana_config->amic_differential_r = mixer->ana1_differential_en[1];
-	}
-	if (dpcm->source_in == ENUM_AIN_ANA2_IN) {
-		ana_config->analog_gain_l = mixer->ana2_agc[0];
-		ana_config->analog_gain_r = mixer->ana2_agc[1];
-		ana_config->digital_gain_en = mixer->ana2_dgc[0];
-		ana_config->digital_gain_l = mixer->ana2_dgc[1];
-		ana_config->digital_gain_r = mixer->ana2_dgc[2];
-		ana_config->amic_differential_l = mixer->ana2_differential_en[0];
-		ana_config->amic_differential_r = mixer->ana2_differential_en[1];
-	}
-	if (dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH) {
-		if (mixer->btpcm_in_path == 3) {
-			ana_config->analog_gain_l = mixer->ana1_agc[0];
-			ana_config->analog_gain_r = mixer->ana1_agc[0];
-			ana_config->digital_gain_en = mixer->ana1_dgc[0];
-			ana_config->digital_gain_l = mixer->ana1_dgc[1];
-			ana_config->digital_gain_r = mixer->ana1_dgc[2];
-			ana_config->amic_differential_l = mixer->ana1_differential_en[0];
-			ana_config->amic_differential_r = mixer->ana1_differential_en[1];
-		} else if (mixer->btpcm_in_path == 4) {
-			ana_config->analog_gain_l = mixer->ana2_agc[0];
-			ana_config->analog_gain_r = mixer->ana2_agc[1];
-			ana_config->digital_gain_en = mixer->ana2_dgc[0];
-			ana_config->digital_gain_l = mixer->ana2_dgc[1];
-			ana_config->digital_gain_r = mixer->ana2_dgc[2];
-			ana_config->amic_differential_l = mixer->ana2_differential_en[0];
-			ana_config->amic_differential_r = mixer->ana2_differential_en[1];
-		}
-	}
-
-	pr_info("[%s] dev: %d, free_pin: %d, path: %d, config: 0x%x\n", __func__, dpcm->source_in, free_pin, rpc->argate_info[2], rpc->argate_info[3]);
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-
-	return ret;
-}
-
-int rpc_config_amic_voltage(phys_addr_t paddr, void *vaddr, int en, int voltage)
-{
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	u32 RPC_ret;
-	unsigned int offset;
-	int ret = -1;
-	phys_addr_t dat;
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-	dat = paddr;
-
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_GLOBAL_CONFIG;
-	rpc->argate_info[0] = ENUM_AUDIO_AI_GLOBAL_CONFIG_MIC_VOLTAGE;
-	rpc->argate_info[1] = en;
-	rpc->argate_info[2] = voltage;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-
-	return ret;
-}
-
-int rpc_config_mic_mute(struct device *dev, struct rtk_snd_mixer *mixer)
-{
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	u32 RPC_ret;
-	phys_addr_t dat;
-	unsigned long offset;
-	void *vaddr;
-	size_t size = SZ_4K;
-	int ret = -1;
-
-	mutex_lock(&dev->mutex);
-	rheap_setup_dma_pools(dev, "rtk_media_heap",
-			      RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
-			      RTK_FLAG_ACPUACC, __func__);
-
-	vaddr = dma_alloc_coherent(dev, size, &dat, GFP_KERNEL);
-	if (!vaddr) {
-		ret = -1;
-		mutex_unlock(&dev->mutex);
-		goto exit;
-	}
-	mutex_unlock(&dev->mutex);
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-
-	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 align */
-
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_GLOBAL_CONFIG;
-	rpc->argate_info[0] = ENUM_AUDIO_AI_GLOBAL_CONFIG_HW_MUTE;
-	if (mixer->mic_mute_en[0] == ENUM_I2S_IN)
-		rpc->argate_info[1] = ENUM_AUDIO_AIN_HW_I2S;
-	else if (mixer->mic_mute_en[0] == ENUM_TDM_IN)
-		rpc->argate_info[1] = ENUM_AUDIO_AIN_HW_TDM;
-	else if (mixer->mic_mute_en[0] == ENUM_DMIC_IN)
-		rpc->argate_info[1] = ENUM_AUDIO_AIN_HW_DMIC;
-	else if (mixer->mic_mute_en[0] == ENUM_ANA1_IN) {
-		if (mixer->analog_in1_path[1] == -1)
-			goto exit;
-		else if (mixer->analog_in1_path[1] == 0)
-			rpc->argate_info[1] = ENUM_AUDIO_AIN_HW_ANALOG;
-		else if (mixer->analog_in1_path[1] == 1)
-			rpc->argate_info[1] = ENUM_AUDIO_AIN_HW_ANALOG_1;
-		else
-			goto exit;
-	}
-	else if (mixer->mic_mute_en[0] == ENUM_ANA2_IN) {
-		if (mixer->analog_in2_path[1] == -1)
-			goto exit;
-		else if (mixer->analog_in2_path[1] == 0)
-			rpc->argate_info[1] = ENUM_AUDIO_AIN_HW_ANALOG;
-		else if (mixer->analog_in2_path[1] == 1)
-			rpc->argate_info[1] = ENUM_AUDIO_AIN_HW_ANALOG_1;
-		else
-			goto exit;
-	}
-
-	if (mixer->mic_mute_en[1])
-		rpc->argate_info[2] = 0x3;
-	else
-		rpc->argate_info[2] = 0x0;
-
-	pr_err("%s type = 0x%x, en = 0x%x\n", __func__, rpc->argate_info[1], rpc->argate_info[2]);
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-	if (vaddr)
-		dma_free_coherent(dev, size, vaddr, dat);
-
-	return ret;
-}
-
 int rpc_create_global_ao(phys_addr_t paddr, void *vaddr, int *ao_id)
 {
 	struct audio_rpc_privateinfo_parameters *rpc = NULL;
@@ -2210,7 +1439,7 @@ exit:
 	return ret;
 }
 
-int rpc_set_ai_gain_volume(struct device *dev, int ai_agent_id,
+int rpc_set_ai_gain_volume(phys_addr_t paddr, void *vaddr, int ai_agent_id,
 			struct ai_gain_set *ai_gain_param)
 {
 	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
@@ -2219,23 +1448,9 @@ int rpc_set_ai_gain_volume(struct device *dev, int ai_agent_id,
 	unsigned int offset;
 	int ret = -1;
 	phys_addr_t dat;
-	void *vaddr;
-	size_t size = SZ_4K;
-
-	mutex_lock(&dev->mutex);
-	rheap_setup_dma_pools(dev, "rtk_media_heap",
-			      RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
-			      RTK_FLAG_ACPUACC, __func__);
-
-	vaddr = dma_alloc_coherent(dev, size, &dat, GFP_KERNEL);
-	if (!vaddr) {
-		ret = -1;
-		mutex_unlock(&dev->mutex);
-		goto exit;
-	}
-	mutex_unlock(&dev->mutex);
 
 	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
+	dat = paddr;
 
 	memset(rpc, 0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
 	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
@@ -2277,8 +1492,6 @@ int rpc_set_ai_gain_volume(struct device *dev, int ai_agent_id,
 	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
 	ret = 0;
 exit:
-	if (vaddr)
-		dma_free_coherent(dev, size, vaddr, dat);
 
 	return ret;
 }
@@ -2395,13 +1608,12 @@ int rpc_ai_connect_alsa(phys_addr_t paddr, void *vaddr,
 
 	switch (dpcm->source_in) {
 	case ENUM_AIN_AUDIO_V3:
-	case ENUM_AIN_BTPCM:
 		/* 1 channel */
 		cmd->private_info[3] = 1;
 		break;
 	default:
 		/* channels */
-		cmd->private_info[3] = runtime->channels;
+		cmd->private_info[3] = 0;
 		break;
 	}
 
@@ -2593,64 +1805,6 @@ int rpc_setup_aec(phys_addr_t paddr, void *vaddr,
 	}
 
 	if (rpc->res != S_OK) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	pr_info("[%s %s %d] success\n", __FILE__, __func__, __LINE__);
-	ret = 0;
-exit:
-	return ret;
-}
-
-int rpc_setup_aec_test(phys_addr_t paddr, void *vaddr,
-		       struct snd_rtk_cap_pcm *dpcm,
-		       struct snd_pcm_runtime *runtime)
-{
-	struct audio_rpc_aio_privateinfo_parameters *rpc = NULL;
-	int ret = -1;
-	phys_addr_t dat;
-	unsigned int sample_rate = runtime->rate;
-	int offset;
-	int *p;
-	u32 RPC_ret;
-
-	if (sample_rate == 22050)
-		sample_rate = 24000;
-
-	rpc = (struct audio_rpc_aio_privateinfo_parameters *)vaddr;
-	dat = paddr;
-
-	offset = get_rpc_alignment_offset(sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	offset = ALIGN(offset, 128); /* HIFI 128 Align */
-	p = (int *)(vaddr + offset);
-	memset(rpc, 0x0, sizeof(struct audio_rpc_aio_privateinfo_parameters));
-	memset(p, 0x0, 128);
-
-	rpc->instance_id = dpcm->ai_lb_agent_id;
-	rpc->type = ENUM_PRIVATEINFO_AIO_AI_PRIVATEINFO;
-	rpc->argate_info[0] = ENUM_AI_PRIVATE_LOOPBACK_AO;
-	rpc->argate_info[1] |= (1 << ENUM_RPC_AI_LOOPBACK_FROM_AO_I2S);
-	if (!dpcm->mixer->btpcm_aec_en) {
-		rpc->argate_info[2] |= 0x2379;
-		rpc->argate_info[3] = dat + offset;
-	}
-
-	p[0] = p[2] = p[4] = 1;
-	p[1] = dpcm->phy_lpcm_ring;
-	p[3] = dpcm->phy_lb_lpcm_ring;
-	p[5] = dpcm->phy_mix_lpcm_ring;
-
-	if (send_rpc(hifi_ept_info,
-		     ENUM_KERNEL_RPC_AIO_PRIVATEINFO,
-		     dat,
-		     dat + offset + 128,
-		     &RPC_ret)) {
-		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
-		goto exit;
-	}
-
-	if (RPC_ret != S_OK) {
 		pr_err("[ALSA %s %d RPC fail]\n", __func__, __LINE__);
 		goto exit;
 	}

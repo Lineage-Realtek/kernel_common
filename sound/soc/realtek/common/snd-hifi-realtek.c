@@ -74,7 +74,6 @@ static void snd_card_capture_setup_pts(struct snd_pcm_runtime *runtime,
 static int rtk_snd_capture_hdmirx_enable(void);
 static void rtk_snd_capture_handle_HDMI_plug_out(struct snd_pcm_substream *substream);
 
-static enum hrtimer_restart snd_card_timer_function(struct hrtimer *timer);
 static void rtk_playback_realtime_function(struct snd_pcm_runtime *runtime);
 static enum hrtimer_restart rtk_capture_timer_function(struct hrtimer *timer);
 static enum hrtimer_restart rtk_aec_timer_function(struct hrtimer *timer);
@@ -154,30 +153,17 @@ static char *snd_pcm_id[] = {"Skip decoder normal/HDMI-RX",
 			     "rtk_snd_audio_v4_in",
 			     "rtk_snd_i2s_loopback_in",
 			     "rtk_snd_dmic_passthrough_in",
-			     "rtk_snd_pure_dmic_in",
-			     "rtk_snd_btpcm_in",
-			     "rtk_snd_btpcm_passthrough_in",
-			     "rtk_snd_btpcm_passthrough_out",
-			     "rtk_snd_ana_in_1",
-			     "rtk_snd_ana_in_2",
-			     "rtk_snd_tdm_in",
-			     "rtk_snd_spdif_in",
-			     "rtk_snd_i2s1_in",
-			     "rtk_snd_i2s2_in",
-			     "rtk_snd_tdm1_in",
-			     "rtk_snd_tdm2_in"};
+			     "rtk_snd_pure_dmic_in"};
 
 struct snd_card_data {
 	int card_id;
 };
 
-static const struct snd_card_data rtk_sound_card0[] =
-{
+static const struct snd_card_data rtk_sound_card0[] = {
 	{ .card_id = 1, },
 };
 
-static const struct snd_card_data rtk_sound_card1[] =
-{
+static const struct snd_card_data rtk_sound_card1[] = {
 	{ .card_id = 2, },
 };
 
@@ -200,30 +186,6 @@ static struct snd_kcontrol_new snd_feature_ctrl[] = {
 	RTK_FEATURE_CTRL("32 Tone Control", 0, ENUM_32_TONE_CONTROL),
 	RTK_FEATURE_CTRL("Balance & Fade Control", 0, ENUM_BALANCE_CONTROL),
 	RTK_FEATURE_CTRL("Audio Delay Control", 0, ENUM_DELAY_CONTROL),
-	RTK_FEATURE_CTRL("Audio Analog In1 Path", 0, ENUM_ANALOG_IN1_PATH),
-	RTK_FEATURE_CTRL("Audio Analog In2 Path", 0, ENUM_ANALOG_IN2_PATH),
-	RTK_FEATURE_CTRL("Btpcm Passthrough Input Path", 0, ENUM_BTPCM_PASSTHROUGH_AI_PATH),
-	RTK_FEATURE_CTRL("Btpcm Aec Control", 0, ENUM_BTPCM_AEC_CONTROL),
-	RTK_FEATURE_CTRL("Analog In1 Aec Control", 0, ENUM_ANA1_AEC_CONTROL),
-	RTK_FEATURE_CTRL("Analog In2 Aec Control", 0, ENUM_ANA2_AEC_CONTROL),
-	RTK_FEATURE_CTRL("TDM In Aec Control", 0, ENUM_TDM_AEC_CONTROL),
-	RTK_FEATURE_CTRL("Analog In1 ADC Analog Gain", 0, ENUM_ANA1_AGC),
-	RTK_FEATURE_CTRL("Analog In2 ADC Analog Gain", 0, ENUM_ANA2_AGC),
-	RTK_FEATURE_CTRL("Analog In1 ADC Digital Gain", 0, ENUM_ANA1_DGC),
-	RTK_FEATURE_CTRL("Analog In2 ADC Digital Gain", 0, ENUM_ANA2_DGC),
-	RTK_FEATURE_CTRL("Btpcm Passthrough Independent Debug", 0, ENUM_BTPCM_DEBUG),
-	RTK_FEATURE_CTRL("Btpcm Mic Specified Channel", 0, ENUM_BTPCM_MIC_CH_SEL),
-	RTK_FEATURE_CTRL("Audio I2S0 In Mode", 0, ENUM_AI_I2S0_MODE),
-	RTK_FEATURE_CTRL("Audio I2S1 In Mode", 0, ENUM_AI_I2S1_MODE),
-	RTK_FEATURE_CTRL("Audio I2S2 In Mode", 0, ENUM_AI_I2S2_MODE),
-	RTK_FEATURE_CTRL("Analog In1 Differential Enable", 0, ENUM_ANA1_DIFFERENTIAL_EN),
-	RTK_FEATURE_CTRL("Analog In2 Differential Enable", 0, ENUM_ANA2_DIFFERENTIAL_EN),
-	RTK_FEATURE_CTRL("Mic Mute Enable", 0, ENUM_MIC_MUTE_EN),
-	RTK_FEATURE_CTRL("Audio TDM0 In Mode", 0, ENUM_AI_TDM0_MODE),
-	RTK_FEATURE_CTRL("Audio TDM1 In Mode", 0, ENUM_AI_TDM1_MODE),
-	RTK_FEATURE_CTRL("Audio TDM2 In Mode", 0, ENUM_AI_TDM2_MODE),
-	RTK_FEATURE_CTRL("Btpcm Mode", 0, ENUM_BTPCM_MODE),
-	RTK_FEATURE_CTRL("Btpcm Queue Buffer", 0, ENUM_BTPCM_QUEUE_BUF),
 };
 
 struct rtk_krpc_ept_info *hifi_ept_info;
@@ -231,7 +193,6 @@ struct rtk_alsa_device {
 	struct device *dev;
 	struct snd_card *card;
 	int lb_secure_buf;
-	int ao_agent_id;
 };
 
 static struct snd_pcm_ops snd_card_rtk_playback_ops = {
@@ -295,10 +256,6 @@ static int rtk_snd_alloc(struct device *dev, size_t size,
 			 unsigned long heap_flags)
 {
 	mutex_lock(&dev->mutex);
-#ifdef CONFIG_RTK_CACHEABLE_HEADER
-	heap_flags &= ~RTK_FLAG_HIFIACC;
-	heap_flags |= RTK_FLAG_ACPUACC;
-#endif
 	rheap_setup_dma_pools(dev, "rtk_media_heap", heap_flags, __func__);
 	*ion_virt = dma_alloc_coherent(dev, size, ion_phy, GFP_KERNEL);
 	mutex_unlock(&dev->mutex);
@@ -690,45 +647,6 @@ static int rtk_snd_capture_lpcm_ringheader_ai(struct snd_pcm_runtime *runtime)
 		return -1;
 	}
 
-	if (dpcm->source_in == ENUM_AIN_TDM_IN ||
-		dpcm->source_in == ENUM_AIN_TDM1_IN ||
-		dpcm->source_in == ENUM_AIN_TDM2_IN) {
-		ret = rtk_snd_alloc(dev, size, (void *)&dat, (void **)&vaddr,
-				    RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
-				    RTK_FLAG_HIFIACC);
-		if (ret) {
-			pr_err("%s alloc mem fail\n", __func__);
-			return ret;
-		}
-
-		dpcm->phy_lpcm_pack_ring = dat;
-		dpcm->lpcm_pack_ring = vaddr;
-
-		/* init ring header */
-		dpcm->lpcm_pack_ring->begin_addr = (unsigned int)dpcm->phy_lpcm_pack_data;
-		dpcm->lpcm_pack_ring->size = dpcm->lpcm_pack_ring_size;
-		dpcm->lpcm_pack_ring->read_ptr[0] = dpcm->lpcm_pack_ring->begin_addr;
-		dpcm->lpcm_pack_ring->write_ptr = dpcm->lpcm_pack_ring->begin_addr;
-		dpcm->lpcm_pack_ring->num_read_ptr = 1;
-
-		ring_header.ringbuffer_header_list[0] = (unsigned long)dpcm->phy_lpcm_pack_ring;
-
-		/* init AI ring header */
-		ring_header.instance_id = dpcm->ai_agent_id;
-		ring_header.read_idx = 0;
-		ring_header.list_size = 1;
-		ring_header.pin_id = PCM_PACKED_IN;
-
-		/* RPC set AI ring header */
-		if (rpc_initringbuffer_header(dpcm->phy_addr_rpc,
-					      dpcm->vaddr_rpc,
-					      &ring_header,
-					      ring_header.list_size) < 0) {
-			pr_err("[%s %d fail]\n", __func__, __LINE__);
-			return -1;
-		}
-	}
-
 	if (!dpcm->aec_feature)
 		goto SUCCESS;
 
@@ -963,32 +881,6 @@ static int rtk_snd_init_ringheader_AO(struct snd_pcm_runtime *runtime)
 	return 0;
 }
 
-static int rtk_snd_init_AO_ringheader(struct snd_pcm_runtime *runtime)
-{
-	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
-	struct audio_rpc_ringbuffer_header ring_header;
-
-	/* In DMIC PASSTHROUGH, the ao uses the ai Ringheader
-	 * Therefore, we don't need set up again.
-	 */
-	ring_header.ringbuffer_header_list[0] = (unsigned long)dpcm->phy_mix_lpcm_ring;
-
-	/* init AO ring header */
-	ring_header.instance_id = dpcm->ao_agent_id;
-	ring_header.pin_id = dpcm->ao_pin_id;
-	ring_header.read_idx = 0;
-	ring_header.list_size = 1;
-
-	/* RPC set AO ring header */
-	if (rpc_initringbuffer_header(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
-				      &ring_header, ring_header.list_size) < 0) {
-		pr_err("[%s %d fail]\n", __func__, __LINE__);
-		return -1;
-	}
-
-	return 0;
-}
-
 static int rtk_snd_init_AO_ringheader_by_AI(struct snd_pcm_runtime *runtime)
 {
 	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
@@ -1122,9 +1014,7 @@ static int rtk_snd_init_decoder_inring(struct snd_pcm_runtime *runtime)
 
 static int snd_realtek_hw_capture_run(struct snd_rtk_cap_pcm *dpcm)
 {
-	if (dpcm->source_in == ENUM_AIN_DMIC_PASSTHROUGH ||
-		dpcm->source_in == ENUM_AIN_BTPCM_IN_PASSTHROUGH ||
-		dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH) {
+	if (dpcm->source_in == ENUM_AIN_DMIC_PASSTHROUGH) {
 		if (rpc_pause_svc(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
 				  dpcm->ao_agent_id | dpcm->ao_pin_id)) {
 			pr_err("[%s fail]\n", __func__);
@@ -1138,9 +1028,7 @@ static int snd_realtek_hw_capture_run(struct snd_rtk_cap_pcm *dpcm)
 		return -1;
 	}
 
-	if (dpcm->source_in == ENUM_AIN_DMIC_PASSTHROUGH ||
-		dpcm->source_in == ENUM_AIN_BTPCM_IN_PASSTHROUGH ||
-		dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH) {
+	if (dpcm->source_in == ENUM_AIN_DMIC_PASSTHROUGH) {
 		if (rpc_run_svc(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
 				dpcm->ao_agent_id | dpcm->ao_pin_id)) {
 			pr_err("[%s fail]\n", __func__);
@@ -1167,8 +1055,7 @@ static int snd_realtek_hw_capture_run(struct snd_rtk_cap_pcm *dpcm)
 			pr_err("[%s fail]\n", __func__);
 			return -1;
 		}
-		if (dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH && !dpcm->mixer->btpcm_aec_en)
-			return 0;
+
 		if (rpc_run_aec()) {
 			pr_err("[%s fail]\n", __func__);
 			return -1;
@@ -1353,7 +1240,7 @@ static int snd_realtek_reprepare(struct snd_pcm_runtime *runtime)
 	struct audio_rpc_sendio sendio;
 
 	rpc_put_share_memory_latency(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
-				     NULL, NULL, 0, dpcm->ao_pin_id, dpcm->ao_agent_id,
+				     NULL, NULL, 0, dpcm->ao_pin_id,
 				     ENUM_PRIVATEINFO_AUDIO_GET_SHARE_MEMORY_FROM_ALSA);
 
 	if (!dpcm->playback_mode) {
@@ -1406,16 +1293,12 @@ static int snd_realtek_reprepare(struct snd_pcm_runtime *runtime)
 static int rtk_snd_capture_malloc_ring(struct snd_pcm_runtime *runtime)
 {
 	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
 	struct device *dev = dpcm->substream->pcm->card->dev;
 	struct rtk_alsa_device *alsa_dev = dev_get_drvdata(dev);
 	int ch, ret;
 	phys_addr_t dat;
 	void *vaddr;
 	size_t size = RTK_ENC_AI_BUFFER_SIZE;
-
-	if (dpcm->source_in == ENUM_AIN_I2S && mixer->ai_i2s0_mode == ENUM_AI_I2S_SLAVE_ENFORCE)
-		size = 4096 * 1024;
 
 	for (ch = 0; ch < runtime->channels ; ++ch) {
 		if (dpcm->va_airing_data[ch]) {
@@ -1488,15 +1371,11 @@ SUCCESS:
 static int rtk_snd_capture_malloc_lpcm_ring(struct snd_pcm_runtime *runtime)
 {
 	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
 	struct device *dev = dpcm->substream->pcm->card->dev;
 	phys_addr_t dat;
 	void *vaddr;
 	size_t size = RTK_ENC_LPCM_BUFFER_SIZE;
 	int ret;
-
-	if (dpcm->source_in == ENUM_AIN_I2S && mixer->ai_i2s0_mode == ENUM_AI_I2S_SLAVE_ENFORCE)
-		size = 4096 * 1024;
 
 	ret = rtk_snd_alloc(dev, size, (void *)&dat, (void **)&vaddr,
 			    RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
@@ -1509,23 +1388,6 @@ static int rtk_snd_capture_malloc_lpcm_ring(struct snd_pcm_runtime *runtime)
 	dpcm->phy_lpcm_data = dat;
 	dpcm->lpcm_data = vaddr;
 	dpcm->lpcm_ring_size = size;
-
-	if (dpcm->source_in == ENUM_AIN_TDM_IN ||
-		dpcm->source_in == ENUM_AIN_TDM1_IN ||
-		dpcm->source_in == ENUM_AIN_TDM2_IN) {
-		size = RTK_AI_PACK_BUFFER_SIZE;
-		ret = rtk_snd_alloc(dev, size, (void *)&dat, (void **)&vaddr,
-				    RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
-				    RTK_FLAG_ACPUACC);
-		if (ret) {
-			pr_err("%s alloc mem fail\n", __func__);
-			return ret;
-		}
-
-		dpcm->phy_lpcm_pack_data = dat;
-		dpcm->lpcm_pack_data = vaddr;
-		dpcm->lpcm_pack_ring_size = size;
-	}
 
 	if (!dpcm->aec_feature)
 		goto SUCCESS;
@@ -1681,7 +1543,6 @@ static int snd_realtek_hw_open(struct snd_pcm_substream *substream)
 static int snd_realtek_hw_init(struct device *dev,
 			       struct snd_rtk_pcm *dpcm)
 {
-	struct rtk_alsa_device *alsa_dev = dev_get_drvdata(dev);
 	int pin_id;
 
 	if (dpcm->hw_init != 0)
@@ -1696,7 +1557,12 @@ static int snd_realtek_hw_init(struct device *dev,
 		pin_id = AUDIO_ALSA_OUT;
 	}
 
-	dpcm->ao_agent_id = alsa_dev->ao_agent_id;
+	if (rpc_create_ao_agent(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
+				&dpcm->ao_agent_id, pin_id)) {
+		pr_err("[No AO agent %s %d]\n", __func__, __LINE__);
+		return -1;
+	}
+
 	dpcm->hw_init = 1;
 
 	return 0;
@@ -1769,23 +1635,6 @@ static int snd_realtek_hw_capture_free_ring(struct snd_pcm_runtime *runtime)
 		size = SZ_4K;
 		dma_free_coherent(dev, size, vaddr, dat);
 		dpcm->lpcm_ring = NULL;
-	}
-
-	/* free AI lpcm pack ring */
-	if (dpcm->lpcm_pack_data) {
-		dat = dpcm->phy_lpcm_pack_data;
-		vaddr = dpcm->lpcm_pack_data;
-		size = dpcm->lpcm_pack_ring_size;
-		dma_free_coherent(dev, size, vaddr, dat);
-		dpcm->lpcm_pack_data = NULL;
-	}
-
-	if (dpcm->lpcm_ring) {
-		dat = dpcm->phy_lpcm_pack_ring;
-		vaddr = dpcm->lpcm_pack_ring;
-		size = SZ_4K;
-		dma_free_coherent(dev, size, vaddr, dat);
-		dpcm->lpcm_pack_ring = NULL;
 	}
 
 	/* free AI pts ring */
@@ -1893,29 +1742,20 @@ static int snd_realtek_hw_free_ring(struct snd_pcm_runtime *runtime)
 static void snd_card_runtime_free(struct snd_pcm_runtime *runtime)
 {
 	struct snd_rtk_pcm *dpcm = runtime->private_data;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
 	struct device *dev;
 	phys_addr_t dat;
 	void *vaddr;
 	size_t size;
-	unsigned long flags;
 
 	if (!dpcm)
 		goto out;
 
-	pr_info("%s free playback dma buf\n", __func__);
-
-	spin_lock_irqsave(&mixer->mixer_lock, flags);
-
 	dev = dpcm->substream->pcm->card->dev;
+	pr_info("%s free playback dma buf\n", __func__);
 
 	size = sizeof(struct snd_rtk_pcm);
 	dat = dpcm->phy_addr;
 	vaddr = dpcm;
-	runtime->private_data = NULL;
-
-	spin_unlock_irqrestore(&mixer->mixer_lock, flags);
-
 	dma_free_coherent(dev, size, vaddr, dat);
 out:
 	runtime->private_data = NULL;
@@ -1924,29 +1764,20 @@ out:
 static void snd_card_capture_runtime_free(struct snd_pcm_runtime *runtime)
 {
 	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
 	struct device *dev;
 	phys_addr_t dat;
 	void *vaddr;
 	size_t size;
-	unsigned long flags;
 
 	if (!dpcm)
 		goto out;
 
-	pr_info("%s free capture dma buf\n", __func__);
-
-	spin_lock_irqsave(&mixer->mixer_lock, flags);
-
 	dev = dpcm->substream->pcm->card->dev;
+	pr_info("%s free capture dma buf\n", __func__);
 
 	size = sizeof(struct snd_rtk_cap_pcm);
 	dat = dpcm->phy_addr;
 	vaddr = dpcm;
-	runtime->private_data = NULL;
-
-	spin_unlock_irqrestore(&mixer->mixer_lock, flags);
-
 	dma_free_coherent(dev, size, vaddr, dat);
 out:
 	runtime->private_data = NULL;
@@ -1957,9 +1788,7 @@ hwdep_ioctl(struct snd_hwdep *hwdep, struct file *file,
 	    unsigned int cmd, unsigned long arg)
 {
 	struct snd_pcm *pcm = hwdep->private_data;
-	struct rtk_snd_mixer *mixer = pcm->card->private_data;
-	struct device *dev = mixer->dev;
-	struct snd_rtk_pcm *dpcm = NULL, dpcm_tmp;
+	struct snd_rtk_pcm *dpcm = NULL;
 	struct snd_rtk_cap_pcm *dpcm_c = NULL;
 	struct snd_pcm_mmap_fd __user *_mmap_fd = NULL;
 	struct snd_pcm_mmap_fd mmap_fd;
@@ -1972,8 +1801,6 @@ hwdep_ioctl(struct snd_hwdep *hwdep, struct file *file,
 	s32 dir = -1;
 	unsigned int volume;
 	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
-	unsigned long flags;
-	int agent_id, pin_id;
 
 	switch (cmd) {
 	case SNDRV_PCM_IOCTL_MMAP_DATA_FD:
@@ -2050,33 +1877,21 @@ hwdep_ioctl(struct snd_hwdep *hwdep, struct file *file,
 		put_user(mlatency, (int __user *)arg);
 		break;
 	case SNDRV_PCM_IOCTL_VOLUME_SET:
-		spin_lock_irqsave(&mixer->mixer_lock, flags);
-
 		substream = pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
 		if (!substream || !substream->runtime) {
-			substream = pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
-			if (!substream || !substream->runtime) {
-				spin_unlock_irqrestore(&mixer->mixer_lock, flags);
-				pr_err("%s can't find playback & capture substream\n", __func__);
-				ret = -ENODEV;
-				break;
-			}
-			dpcm_c = substream->runtime->private_data;
-			dpcm_tmp.ao_agent_id = dpcm_c->ao_agent_id;
-			dpcm_tmp.ao_pin_id = dpcm_c->ao_pin_id;
-			dpcm_tmp.phy_addr_rpc = dpcm_c->phy_addr_rpc;
-			dpcm_tmp.vaddr_rpc = dpcm_c->vaddr_rpc;
-			dpcm = &dpcm_tmp;
-		} else
-			dpcm = substream->runtime->private_data;
+			pr_err("%s substream or runtime not found\n", __func__);
+			ret = -ENODEV;
+			break;
+		}
 
+		dpcm = substream->runtime->private_data;
 		if (!dpcm) {
-			spin_unlock_irqrestore(&mixer->mixer_lock, flags);
 			pr_err("%s dpcm not found\n", __func__);
 			ret = -ENODEV;
 			break;
 		}
 
+		pr_info("[ALSA SET VOLUME]\n");
 		get_user(dpcm->volume, (int *)arg);
 
 		if (dpcm->volume < 0)
@@ -2084,15 +1899,7 @@ hwdep_ioctl(struct snd_hwdep *hwdep, struct file *file,
 		if (dpcm->volume > 31)
 			dpcm->volume = 31;
 
-		volume = dpcm->volume;
-		agent_id = dpcm->ao_agent_id;
-		pin_id = dpcm->ao_pin_id;
-
-		spin_unlock_irqrestore(&mixer->mixer_lock, flags);
-
-		pr_info("[ALSA SET VOLUME]\n");
-
-		rpc_set_ao_flash_volume(dev, agent_id, pin_id, volume);
+		rpc_set_ao_flash_volume(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
 		break;
 	case SNDRV_PCM_IOCTL_GET_FW_DELAY:
 		substream = pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
@@ -2154,36 +1961,9 @@ hwdep_ioctl(struct snd_hwdep *hwdep, struct file *file,
 		}
 		dpcm->set_mixing_index = dpcm->mixing_idx.enable;
 		break;
-	case SNDRV_PCM_IOCTL_CHANNEL_IDX_SET:
-		substream = pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
-		if (!substream || !substream->runtime) {
-			pr_err("%s substream or runtime not found\n", __func__);
-			ret = -ENODEV;
-			break;
-		}
-
-		dpcm = substream->runtime->private_data;
-		if (!dpcm) {
-			pr_err("%s dpcm not found\n", __func__);
-			ret = -ENODEV;
-			break;
-		}
-
-		pr_info("[Set Channel Mapping]\n");
-		if (copy_from_user((void *)&dpcm->channel_idx,
-			(void *)arg, sizeof(struct audio_channel_index))) {
-			pr_err("%s %d copy channel_idx fail\n",__func__, __LINE__);
-			ret = -ENODEV;
-			break;
-		}
-		dpcm->set_channel_index = dpcm->channel_idx.enable;
-		break;
 	case SNDRV_PCM_IOCTL_AI_GAIN_SET:
-		spin_lock_irqsave(&mixer->mixer_lock, flags);
-
 		substream = pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
 		if (!substream || !substream->runtime) {
-			spin_unlock_irqrestore(&mixer->mixer_lock, flags);
 			pr_err("%s substream or runtime not found\n", __func__);
 			ret = -ENODEV;
 			break;
@@ -2191,14 +1971,10 @@ hwdep_ioctl(struct snd_hwdep *hwdep, struct file *file,
 
 		dpcm_c = substream->runtime->private_data;
 		if (!dpcm_c) {
-			spin_unlock_irqrestore(&mixer->mixer_lock, flags);
 			pr_err("%s dpcm_c not found\n", __func__);
 			ret = -ENODEV;
 			break;
 		}
-		agent_id = dpcm_c->ai_agent_id;
-
-		spin_unlock_irqrestore(&mixer->mixer_lock, flags);
 
 		pr_info("[Set AI Gain Value]\n");
 		if (copy_from_user((void *)&ai_gain_param,
@@ -2207,7 +1983,9 @@ hwdep_ioctl(struct snd_hwdep *hwdep, struct file *file,
 			ret = -ENODEV;
 			break;
 		}
-		rpc_set_ai_gain_volume(dev, agent_id, &ai_gain_param);
+
+		rpc_set_ai_gain_volume(dpcm_c->phy_addr_rpc, dpcm_c->vaddr_rpc,
+				       dpcm_c->ai_agent_id, &ai_gain_param);
 		break;
 	default:
 		ret = -EINVAL;
@@ -2306,6 +2084,7 @@ static int snd_card_playback_open(struct snd_pcm_substream *substream)
 		pr_info("ALSA: AO skip decoder normal flow.\n");
 		break;
 	case 1:
+		/* AO not decode lpcm, mmap */
 		dpcm->playback_mode = data->card_id;
 		pr_info("ALSA: AO skip decoder mmap flow.\n");
 		break;
@@ -2314,13 +2093,14 @@ static int snd_card_playback_open(struct snd_pcm_substream *substream)
 		pr_info("ALSA: AO skip decoder deepbuffer flow.\n");
 		break;
 	case 3:
+		/* AO decode lpcm */
+		dpcm->playback_mode = 0;
+		pr_info("ALSA: AO with decoder flow.\n");
+		break;
 	case 4:
-	case 5:
-	case 6:
-	case 7:
+		/* AO not decode lpcm, second AO */
 		dpcm->playback_mode = data->card_id;
-		pr_info("ALSA: additional flash pin.\n");
-//		pr_info("ALSA: AO with decoder flow.\n");
+		pr_info("ALSA: Second AO flow.\n");
 		break;
 	default:
 		pr_info("ALSA: Unknown pcm number.\n");
@@ -2339,10 +2119,6 @@ static int snd_card_playback_open(struct snd_pcm_substream *substream)
 		ret = -ENOMEM;
 		goto fail_dat;
 	}
-
-	/* init hr timer */
-	hrtimer_init(&dpcm->hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	dpcm->hr_timer.function = &snd_card_timer_function;
 
 	/* init dec_out_msec */
 	dpcm->dec_out_msec = 0;
@@ -2492,8 +2268,6 @@ static int snd_card_capture_open(struct snd_pcm_substream *substream)
 	runtime->private_free = snd_card_capture_runtime_free;
 	dpcm->substream = substream;
 
-	dpcm->mixer = (struct rtk_snd_mixer *)(substream->pcm->card->private_data);
-
 	pr_info("ALSA: Device number is %d\n", substream->pcm->device);
 	switch (substream->pcm->device) {
 	case 0:
@@ -2534,10 +2308,9 @@ static int snd_card_capture_open(struct snd_pcm_substream *substream)
 		pr_info("ALSA: For ao i2s loopback to ain.\n");
 		break;
 	case 8:
-	case ENUM_AIN_BTPCM_IN_PASSTHROUGH:
 		/* it's for dmic pass through to ao */
-		dpcm->source_in = substream->pcm->device;
-		pr_info("ALSA: For %d pass through to ao.\n", dpcm->source_in);
+		dpcm->source_in = ENUM_AIN_DMIC_PASSTHROUGH;
+		pr_info("ALSA: For dmic pass through to ao.\n");
 		/* Create global ao id */
 		rpc_create_global_ao(dpcm->phy_addr_rpc,
 				     dpcm->vaddr_rpc, &dpcm->ao_agent_id);
@@ -2550,69 +2323,10 @@ static int snd_card_capture_open(struct snd_pcm_substream *substream)
 			goto fail_1;
 		}
 		break;
-	case ENUM_AIN_BTPCM_OUT_PASSTHROUGH:
-		dpcm->source_in = substream->pcm->device;
-		pr_info("ALSA: For %d pass through to btpcm out.\n", dpcm->source_in);
-		/* Create global ao id */
-		rpc_create_global_ao(dpcm->phy_addr_rpc,
-				     dpcm->vaddr_rpc, &dpcm->ao_agent_id);
-		/* get ao flash pin ID */
-		dpcm->ao_pin_id = BT_PCM_IN;
-		dpcm->aec_feature = 1;
-		break;
 	case 9:
 		/* it's for pure DMIC */
 		dpcm->source_in = ENUM_AIN_PURE_DMIC;
 		pr_info("ALSA: This is for pure DMIC.\n");
-		break;
-	case ENUM_AIN_BTPCM:
-		/* it's for btpcm */
-		dpcm->source_in = ENUM_AIN_BTPCM;
-		pr_info("ALSA: This is for BT-PCM.\n");
-		break;
-	case ENUM_AIN_ANA1_IN:
-		if (dpcm->mixer->ana1_aec_en)
-			dpcm->aec_feature = 1;
-		dpcm->source_in = substream->pcm->device;
-		pr_info("ALSA: This is for analog in1, aec_en:%d.\n", dpcm->aec_feature);
-		break;
-	case ENUM_AIN_ANA2_IN:
-		if (dpcm->mixer->ana2_aec_en)
-			dpcm->aec_feature = 1;
-		dpcm->source_in = substream->pcm->device;
-		pr_info("ALSA: This is for analog in2, aec_en:%d.\n", dpcm->aec_feature);
-		break;
-	case ENUM_AIN_TDM_IN:
-		if (dpcm->mixer->tdm_aec_en)
-			dpcm->aec_feature = 1;
-		dpcm->source_in = ENUM_AIN_TDM_IN;
-
-		pr_info("ALSA: This is for DIGITAL_IN:%d, aec_en:%d.\n", dpcm->source_in, dpcm->aec_feature);
-		break;
-	case ENUM_AIN_SPDIF_IN:
-		dpcm->source_in = ENUM_AIN_SPDIF_IN;
-
-		pr_info("ALSA: This is for SPDIF_IN:%d, aec_en:%d.\n", dpcm->source_in, dpcm->aec_feature);
-		break;
-	case ENUM_AIN_I2S1_IN:
-		dpcm->source_in = ENUM_AIN_I2S1_IN;
-
-		pr_info("ALSA: This is for I2s1_IN:%d, aec_en:%d.\n", dpcm->source_in, dpcm->aec_feature);
-		break;
-	case ENUM_AIN_I2S2_IN:
-		dpcm->source_in = ENUM_AIN_I2S2_IN;
-
-		pr_info("ALSA: This is for I2s2_IN:%d, aec_en:%d.\n", dpcm->source_in, dpcm->aec_feature);
-		break;
-	case ENUM_AIN_TDM1_IN:
-		dpcm->source_in = ENUM_AIN_TDM1_IN;
-
-		pr_info("ALSA: This is for TDM1_IN:%d, aec_en:%d.\n", dpcm->source_in, dpcm->aec_feature);
-		break;
-	case ENUM_AIN_TDM2_IN:
-		dpcm->source_in = ENUM_AIN_TDM2_IN;
-
-		pr_info("ALSA: This is for TDM2_IN:%d, aec_en:%d.\n", dpcm->source_in, dpcm->aec_feature);
 		break;
 	default:
 		pr_info("ALSA: Not in the list maybe for non-pcm.\n");
@@ -2628,6 +2342,8 @@ static int snd_card_capture_open(struct snd_pcm_substream *substream)
 		ret = -ENOMEM;
 		goto fail_1;
 	}
+
+	dpcm->mixer = (struct rtk_snd_mixer *)(substream->pcm->card->private_data);
 
 	/* init hr timer */
 	hrtimer_init(&dpcm->hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -2659,7 +2375,6 @@ static int snd_card_capture_close(struct snd_pcm_substream *substream)
 	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
 	struct device *dev = substream->pcm->card->dev;
 	struct audio_rpc_sendio sendio;
-	struct audio_rpc_ringbuffer_header ring_header = {0};
 	ktime_t remaining;
 	int ret = -1;
 	phys_addr_t dat;
@@ -2671,8 +2386,7 @@ static int snd_card_capture_close(struct snd_pcm_substream *substream)
 	if (!dpcm)
 		return -1;
 
-	if (dpcm->source_in == ENUM_AIN_DMIC_PASSTHROUGH ||
-		dpcm->source_in == ENUM_AIN_BTPCM_IN_PASSTHROUGH) {
+	if (dpcm->source_in == ENUM_AIN_DMIC_PASSTHROUGH) {
 		/* stop AO */
 		rpc_stop_svc(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
 			     dpcm->ao_agent_id | dpcm->ao_pin_id);
@@ -2692,43 +2406,12 @@ static int snd_card_capture_close(struct snd_pcm_substream *substream)
 		}
 	}
 
-	if (dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH) {
-		rpc_stop_svc(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
-			     dpcm->ao_agent_id | dpcm->ao_pin_id);
-		/* init AO inring header */
-		ring_header.instance_id = dpcm->ao_agent_id;
-		ring_header.pin_id = dpcm->ao_pin_id;
-
-		/* RPC set AO inring header */
-		if (rpc_initringbuffer_header(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
-					      &ring_header, 0) < 0) {
-			pr_err("[%s %d fail]\n", __func__, __LINE__);
-			return -1;
-		}
-		if (dpcm->mixer->btpcm_in_path == 3)
-			dpcm->mixer->analog_in1_path[1] = -1;
-		else if (dpcm->mixer->btpcm_in_path == 4)
-			dpcm->mixer->analog_in2_path[1] = -1;
-	}
-
-	if (dpcm->source_in == ENUM_AIN_ANA1_IN)
-		dpcm->mixer->analog_in1_path[1] = -1;
-	if (dpcm->source_in == ENUM_AIN_ANA2_IN)
-		dpcm->mixer->analog_in2_path[1] = -1;
-
 	if (dpcm->aec_feature) {
-		if (dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH && !dpcm->mixer->btpcm_aec_en) {
-			rpc_destroy_ai_flow_svc(dpcm->phy_addr_rpc,
-						dpcm->vaddr_rpc,
-						dpcm->ai_lb_agent_id,
-						dpcm->init_ring);
-		} else {
-			rpc_stop_aec();
-			rpc_destroy_ai_flow_svc(dpcm->phy_addr_rpc,
-						dpcm->vaddr_rpc,
-						dpcm->ai_lb_agent_id,
-						dpcm->init_ring);
-		}
+		rpc_stop_aec();
+		rpc_destroy_ai_flow_svc(dpcm->phy_addr_rpc,
+					dpcm->vaddr_rpc,
+					dpcm->ai_lb_agent_id,
+					dpcm->init_ring);
 	}
 
 	/* destroy AI including pause/stop/destroy */
@@ -2766,22 +2449,6 @@ exit:
 	return ret;
 }
 
-static enum hrtimer_restart snd_card_timer_function(struct hrtimer *timer)
-{
-	struct snd_rtk_pcm *dpcm =
-		container_of(timer, struct snd_rtk_pcm, hr_timer);
-	struct snd_pcm_substream *substream = dpcm->substream;
-
-	if (dpcm->en_hr_timer == HRTIMER_RESTART) {
-		snd_pcm_period_elapsed(substream);
-		/* Set up the next time */
-		hrtimer_forward_now(timer, dpcm->ktime);
-		return HRTIMER_RESTART;
-	} else {
-		return HRTIMER_NORESTART;
-	}
-}
-
 static int snd_card_playback_ack(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -2797,18 +2464,16 @@ static int snd_card_playback_close(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_rtk_pcm *dpcm = runtime->private_data;
 	struct device *dev = substream->pcm->card->dev;
-	struct audio_rpc_ringbuffer_header ring_header = {0};
 	struct audio_rpc_sendio sendio;
 	int ret = 0;
 	phys_addr_t dat;
 	void *vaddr;
 	size_t size;
-	ktime_t remaining;
 
 	pr_info("[ALSA %s %d]\n", __func__, __LINE__);
 
 	rpc_put_share_memory_latency(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
-				     NULL, NULL, 0, dpcm->ao_pin_id, dpcm->ao_agent_id,
+				     NULL, NULL, 0, dpcm->ao_pin_id,
 				     ENUM_PRIVATEINFO_AUDIO_GET_SHARE_MEMORY_FROM_ALSA);
 
 	if (dpcm->ao_pin_id) {
@@ -2856,33 +2521,11 @@ static int snd_card_playback_close(struct snd_pcm_substream *substream)
 		filp_close(dpcm->fp, NULL);
 #endif
 
-	/* destroy the hr timer */
-	remaining = hrtimer_get_remaining(&dpcm->hr_timer);
-	if (ktime_to_ns(remaining) > 0)
-		ndelay(ktime_to_ns(remaining));
-
-	ret = hrtimer_cancel(&dpcm->hr_timer);
-	if (ret) {
-		pr_err("The timer still alive...\n");
-		goto exit;
-	}
-
 exit:
 	rpc_release_ao_flash_pin(dpcm->phy_addr_rpc,
 				 dpcm->vaddr_rpc,
 				 dpcm->ao_agent_id,
 				 dpcm->ao_pin_id);
-
-	/* init AO inring header */
-	ring_header.instance_id = dpcm->ao_agent_id;
-	ring_header.pin_id = dpcm->ao_pin_id;
-
-	/* RPC set AO inring header */
-	if (rpc_initringbuffer_header(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
-				      &ring_header, 0) < 0) {
-		pr_err("[%s %d fail]\n", __func__, __LINE__);
-		return -1;
-	}
 
 	snd_open_count--;
 
@@ -2989,7 +2632,6 @@ static snd_pcm_uframes_t snd_card_playback_pointer(struct snd_pcm_substream *sub
 	snd_pcm_uframes_t ret = 0;
 	snd_pcm_uframes_t read_addsize = 0;
 	unsigned int hw_ringrp;
-	static ktime_t dbg_time;
 
 	if (!dpcm || !dpcm->init_ring || !dpcm->dec_inring)
 		return ret;
@@ -3053,31 +2695,27 @@ static snd_pcm_uframes_t snd_card_playback_pointer(struct snd_pcm_substream *sub
 	}
 
 	/* check if RP of FW stop */
-	if (dpcm->hw_ptr == dpcm->prehw_ptr) {
-		if (dpcm->dbg_count == 0)
-			dbg_time = ktime_get();
+	if (dpcm->hw_ptr == dpcm->prehw_ptr)
 		dpcm->dbg_count = dpcm->dbg_count + 1;
-	} else {
+	else
 		dpcm->dbg_count = 0;
-	}
-
-	if (dpcm->dbg_count > HZ && ktime_sub(ktime_get(), dbg_time) > NSEC_PER_SEC) {
-		pr_debug("[state %d]\n", runtime->status->state);
-		pr_debug("[runtime->control->appl_ptr %d runtime->status->hw_ptr %d]\n",
+	if (dpcm->dbg_count >= HZ) {
+		pr_err("[state %d]\n", runtime->status->state);
+		pr_err("[runtime->control->appl_ptr %d runtime->status->hw_ptr %d]\n",
 		       (int)runtime->control->appl_ptr,
 		       (int)runtime->status->hw_ptr);
-		pr_debug("[dpcm->total_write %d dpcm->total_read %d dpcm->hw_ptr %d]\n",
+		pr_err("[dpcm->total_write %d dpcm->total_read %d dpcm->hw_ptr %d]\n",
 		       (int)dpcm->total_write,
 		       (int)dpcm->total_read,
 		       (int)dpcm->hw_ptr);
-		pr_debug("[b 0x%x l 0x%x w 0x%x r 0x%x]\n",
+		pr_err("[b 0x%x l 0x%x w 0x%x r 0x%x]\n",
 		       (unsigned int)dpcm->dec_inring->begin_addr,
 		       (unsigned int)(dpcm->dec_inring->begin_addr + dpcm->dec_inring->size),
 		       (unsigned int)dpcm->dec_inring->write_ptr,
 		       (unsigned int)dpcm->dec_inring->read_ptr[0]);
-		pr_debug("[hw_ringrp 0x%x runtime->period_size 0x%lx runtime->periods 0x%x]\n",
+		pr_err("[hw_ringrp 0x%x runtime->period_size 0x%lx runtime->periods 0x%x]\n",
 		       hw_ringrp, runtime->period_size, runtime->periods);
-		pr_debug("[snd_pcm_playback_avail %d runtime->control->avail_min %d]\n",
+		pr_err("[snd_pcm_playback_avail %d runtime->control->avail_min %d]\n",
 		       (int)snd_pcm_playback_avail(runtime),
 		       (int)runtime->control->avail_min);
 		dpcm->dbg_count = 0;
@@ -3117,18 +2755,9 @@ static int snd_card_capture_prepare_lpcm(struct snd_pcm_substream *substream)
 
 	/* decide pts buf or not */
 	switch (dpcm->source_in) {
-	case ENUM_AIN_I2S:
 	case ENUM_AIN_AUDIO_V3:
 	case ENUM_AIN_AUDIO_V4:
 	case ENUM_AIN_DMIC_PASSTHROUGH:
-	case ENUM_AIN_BTPCM_IN_PASSTHROUGH:
-	case ENUM_AIN_BTPCM_OUT_PASSTHROUGH:
-	case ENUM_AIN_TDM_IN:
-	case ENUM_AIN_SPDIF_IN:
-	case ENUM_AIN_I2S1_IN:
-	case ENUM_AIN_I2S2_IN:
-	case ENUM_AIN_TDM1_IN:
-	case ENUM_AIN_TDM2_IN:
 		break;
 	default:
 		/* malloc PTS ring buf */
@@ -3145,22 +2774,16 @@ static int snd_card_capture_prepare_lpcm(struct snd_pcm_substream *substream)
 		break;
 	}
 
-	switch (dpcm->source_in) {
-	case ENUM_AIN_BTPCM_IN_PASSTHROUGH:
-		break;
-	default:
-		/* malloc LPCM ring buf */
-		if (rtk_snd_capture_malloc_lpcm_ring(runtime)) {
-			pr_err("[%s %d fail]\n", __func__, __LINE__);
-			return -ENOMEM;
-		}
+	/* malloc LPCM ring buf */
+	if (rtk_snd_capture_malloc_lpcm_ring(runtime)) {
+		pr_err("[%s %d fail]\n", __func__, __LINE__);
+		return -ENOMEM;
+	}
 
-		/* init LPCM ring header of AI */
-		if (rtk_snd_capture_lpcm_ringheader_ai(runtime)) {
-			pr_err("[%s %d fail]\n", __func__, __LINE__);
-			return -ENOMEM;
-		}
-		break;
+	/* init LPCM ring header of AI */
+	if (rtk_snd_capture_lpcm_ringheader_ai(runtime)) {
+		pr_err("[%s %d fail]\n", __func__, __LINE__);
+		return -ENOMEM;
 	}
 
 	/* Setup LPCM mix buf */
@@ -3196,8 +2819,6 @@ static int snd_card_capture_prepare_lpcm(struct snd_pcm_substream *substream)
 					 dpcm->vaddr_rpc, dpcm);
 		break;
 	case ENUM_AIN_I2S:
-	case ENUM_AIN_I2S1_IN:
-	case ENUM_AIN_I2S2_IN:
 		/* config I2S */
 		rpc_ai_config_i2s_in(dpcm->phy_addr_rpc,
 				     dpcm->vaddr_rpc, dpcm);
@@ -3209,7 +2830,6 @@ static int snd_card_capture_prepare_lpcm(struct snd_pcm_substream *substream)
 					  ENUM_RPC_AI_LOOPBACK_FROM_AO_I2S);
 		break;
 	case ENUM_AIN_DMIC_PASSTHROUGH:
-	case ENUM_AIN_BTPCM_IN_PASSTHROUGH:
 		/* init ringheader of AO_using ai ring */
 		if (rtk_snd_init_AO_ringheader_by_AI(runtime)) {
 			pr_err("[%s %d fail]\n", __func__, __LINE__);
@@ -3228,77 +2848,14 @@ static int snd_card_capture_prepare_lpcm(struct snd_pcm_substream *substream)
 			pr_err("[%s %d fail]\n", __func__, __LINE__);
 			return -ENOMEM;
 		}
-		if (dpcm->source_in == ENUM_AIN_DMIC_PASSTHROUGH) {
-			rpc_ai_config_dmic_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		} else if (dpcm->source_in == ENUM_AIN_BTPCM_IN_PASSTHROUGH) {
-			rpc_set_btpcm_queue_buf(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-			rpc_set_btpcm_config(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm->mixer);
-			rpc_ai_config_btpcm_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		}
-		break;
-	case ENUM_AIN_BTPCM_OUT_PASSTHROUGH:
-		if (rtk_snd_init_AO_ringheader(runtime)) {
-			pr_err("[%s %d fail]\n", __func__, __LINE__);
-			return -ENOMEM;
-		}
-		if (dpcm->mixer->btpcm_in_path == 0) {
-			pr_info("%s btpcm in path is i2s\n", __func__);
-			rpc_ai_config_i2s_in(dpcm->phy_addr_rpc,
-					     dpcm->vaddr_rpc, dpcm);
-		} else if (dpcm->mixer->btpcm_in_path == 1) {
-			pr_info("%s btpcm in path is tdm\n", __func__);
-			rpc_set_tdmin_config(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, runtime);
-			rpc_ai_config_tdm_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		} else if (dpcm->mixer->btpcm_in_path == 2) {
-			pr_info("%s btpcm in path is dmic\n", __func__);
-			rpc_ai_config_dmic_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		} else if (dpcm->mixer->btpcm_in_path == 3) {
-			pr_info("%s btpcm in path is analog 1-%d\n", __func__, dpcm->mixer->analog_in1_path[0]);
-			rpc_ai_config_analog_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, runtime);
-		} else if (dpcm->mixer->btpcm_in_path == 4) {
-			pr_info("%s btpcm in path is analog 2-%d\n", __func__, dpcm->mixer->analog_in2_path[0]);
-			rpc_ai_config_analog_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, runtime);
-		} else
-			pr_err("%s unknown path\n", __func__);
-
-		rpc_set_btpcm_config(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm->mixer);
-		rpc_ao_config_btpcm_out(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		if (dpcm->aec_feature) {
-			rpc_setup_aec_test(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm, runtime);
-			if (dpcm->mixer->btpcm_aec_en)
-				rpc_setup_aec(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm, runtime);
-		}
+		rpc_ai_config_dmic_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
 		break;
 	case ENUM_AIN_PURE_DMIC:
 		/* config pure dmic */
 		rpc_ai_config_dmic_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
 		break;
-	case ENUM_AIN_BTPCM:
-		/* config pure dmic */
-		rpc_set_btpcm_queue_buf(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		rpc_set_btpcm_config(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm->mixer);
-		rpc_ai_config_btpcm_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		break;
-	case ENUM_AIN_TDM_IN:
-	case ENUM_AIN_TDM1_IN:
-	case ENUM_AIN_TDM2_IN:
-		rpc_set_tdmin_config(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, runtime);
-		rpc_ai_config_tdm_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		break;
-	case ENUM_AIN_SPDIF_IN:
-		rpc_ai_config_spdif_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
-		break;
-	case ENUM_AIN_ANA1_IN:
-	case ENUM_AIN_ANA2_IN:
-		rpc_ai_config_analog_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, runtime);
-		if (dpcm->aec_feature) {
-			rpc_ai_config_loopback_in(dpcm->phy_addr_rpc,
-						  dpcm->vaddr_rpc, dpcm->ai_lb_agent_id,
-						  ENUM_RPC_AI_LOOPBACK_FROM_AO_I2S);
-			rpc_setup_aec(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm, runtime);
-		}
-		break;
 	case ENUM_AIN_AEC_DMIC:
+		/* config dmic and loopback for aec */
 		rpc_ai_config_dmic_in(dpcm->phy_addr_rpc, dpcm->vaddr_rpc, dpcm);
 		rpc_ai_config_loopback_in(dpcm->phy_addr_rpc,
 					  dpcm->vaddr_rpc, dpcm->ai_lb_agent_id,
@@ -3319,7 +2876,6 @@ static int snd_card_capture_prepare_lpcm(struct snd_pcm_substream *substream)
 	switch (dpcm->source_in) {
 	case ENUM_AIN_AUDIO_V3:
 	case ENUM_AIN_AUDIO_V4:
-	case ENUM_AIN_BTPCM_IN_PASSTHROUGH:
 		break;
 	default:
 		if (rpc_ai_connect_alsa(dpcm->phy_addr_rpc,
@@ -3363,7 +2919,6 @@ static int snd_card_capture_prepare(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
 	unsigned int sample_rate = runtime->rate;
-	struct rtk_snd_mixer *mixer = dpcm->mixer;
 
 	if (sample_rate == 22050)
 		sample_rate = 24000;
@@ -3375,10 +2930,7 @@ static int snd_card_capture_prepare(struct snd_pcm_substream *substream)
 	}
 
 	/* Setup the hr timer using ktime */
-	if (mixer->ai_i2s0_mode == ENUM_AI_I2S_SLAVE_ENFORCE)
-		dpcm->ktime = ktime_set(0, (runtime->period_size * 1000) / 2000000 * 1000 * 1000);
-	else
-		dpcm->ktime = ktime_set(0, (runtime->period_size * 1000) / sample_rate * 1000 * 1000);
+	dpcm->ktime = ktime_set(0, (runtime->period_size * 1000) / sample_rate * 1000 * 1000);
 
 	pr_info("\n");
 	pr_info("Capture:");
@@ -3481,8 +3033,6 @@ static int snd_card_playback_prepare(struct snd_pcm_substream *substream)
 		       (int)runtime->status->hw_ptr);
 	}
 
-	dpcm->ktime = ktime_set(0, (runtime->period_size * 1000) * 1000 / runtime->rate * 1000);
-
 	if (dpcm->init_ring) {
 		/* Reset the ptr about playback.
 		 * prehw_ptr will influence the next ptr update in timer function.
@@ -3542,7 +3092,7 @@ static int snd_card_playback_prepare(struct snd_pcm_substream *substream)
 		rpc_put_share_memory_latency(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
 					     (void *)dpcm->g_sharemem_ptr_dat,
 					     (void *)dpcm->g_sharemem_ptr_dat2,
-					     dpcm->dec_agent_id, dpcm->ao_pin_id, dpcm->ao_agent_id,
+					     dpcm->dec_agent_id, dpcm->ao_pin_id,
 					     ENUM_PRIVATEINFO_AUDIO_GET_SHARE_MEMORY_FROM_ALSA);
 
 		/* malloc ao_inring */
@@ -3573,7 +3123,7 @@ static int snd_card_playback_prepare(struct snd_pcm_substream *substream)
 		rpc_put_share_memory_latency(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
 					     (void *)dpcm->g_sharemem_ptr_dat,
 					     (void *)dpcm->g_sharemem_ptr_dat2,
-					     -1, dpcm->ao_pin_id, dpcm->ao_agent_id,
+					     -1, dpcm->ao_pin_id,
 					     ENUM_PRIVATEINFO_AUDIO_GET_SHARE_MEMORY_FROM_ALSA);
 
 		/* init ringheader of AO_inring without decoder */
@@ -3912,16 +3462,9 @@ static enum hrtimer_restart rtk_capture_timer_function(struct hrtimer *timer)
 
 			/* calculate PTS */
 			switch (dpcm->source_in) {
-			case ENUM_AIN_I2S:
 			case ENUM_AIN_AUDIO_V3:
 			case ENUM_AIN_AUDIO_V4:
 			case ENUM_AIN_DMIC_PASSTHROUGH:
-			case ENUM_AIN_TDM_IN:
-			case ENUM_AIN_SPDIF_IN:
-			case ENUM_AIN_I2S1_IN:
-			case ENUM_AIN_I2S2_IN:
-			case ENUM_AIN_TDM1_IN:
-			case ENUM_AIN_TDM2_IN:
 				break;
 			default:
 				snd_card_capture_calculate_pts(runtime, period_count);
@@ -4092,10 +3635,6 @@ static int snd_card_capture_trigger(struct snd_pcm_substream *substream, int cmd
 	struct snd_rtk_cap_pcm *dpcm = runtime->private_data;
 	int ret = 0;
 
-	if (dpcm->source_in == ENUM_AIN_BTPCM_IN_PASSTHROUGH ||
-		dpcm->source_in == ENUM_AIN_BTPCM_OUT_PASSTHROUGH)
-		return 0;
-
 	/* error checking */
 	if (snd_pcm_capture_avail(runtime) > runtime->buffer_size ||
 	    snd_pcm_capture_hw_avail(runtime) > runtime->buffer_size) {
@@ -4147,12 +3686,8 @@ static int snd_card_playback_trigger(struct snd_pcm_substream *substream, int cm
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_STOP:
-		dpcm->en_hr_timer = HRTIMER_NORESTART;
-		hrtimer_try_to_cancel(&dpcm->hr_timer);
 		break;
 	case SNDRV_PCM_TRIGGER_START:
-		dpcm->en_hr_timer = HRTIMER_RESTART;
-		hrtimer_start(&dpcm->hr_timer, dpcm->ktime, HRTIMER_MODE_REL);
 		break;
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		break;
@@ -4275,24 +3810,6 @@ static int snd_card_hw_free(struct snd_pcm_substream *substream)
 	dpcm = runtime->private_data;
 	dev = substream->pcm->card->dev;
 
-	if (dpcm->ao_pin_id) {
-		rpc_put_share_memory_latency(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
-					     NULL, NULL, 0, dpcm->ao_pin_id, dpcm->ao_agent_id,
-					     ENUM_PRIVATEINFO_AUDIO_GET_SHARE_MEMORY_FROM_ALSA);
-
-		/* AO pause */
-		if (rpc_pause_svc(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
-				  dpcm->ao_agent_id | dpcm->ao_pin_id)) {
-			pr_err("%s pause fail\n", __func__);
-			goto exit;
-		}
-		if (dpcm->init_ring != 0) {
-			/* stop AO */
-			rpc_stop_svc(dpcm->phy_addr_rpc,
-				     dpcm->vaddr_rpc, dpcm->ao_agent_id | dpcm->ao_pin_id);
-		}
-	}
-
 	if (runtime->dma_buffer_p) {
 		/* Free buffer allocated by ion */
 		pr_info("snd_dma_free_pages %s\n", __func__);
@@ -4300,13 +3817,28 @@ static int snd_card_hw_free(struct snd_pcm_substream *substream)
 		dmab_kref = container_of(dmab, struct snd_dma_buffer_kref, dmab);
 
 		if (!atomic_read(&substream->mmap_count)) {
+			rpc_put_share_memory_latency(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
+						     NULL, NULL, 0, dpcm->ao_pin_id,
+						     ENUM_PRIVATEINFO_AUDIO_GET_SHARE_MEMORY_FROM_ALSA);
+
+			if (dpcm->ao_pin_id) {
+				/* AO pause */
+				if (rpc_pause_svc(dpcm->phy_addr_rpc, dpcm->vaddr_rpc,
+						  dpcm->ao_agent_id | dpcm->ao_pin_id)) {
+					pr_err("%s pause fail\n", __func__);
+				} else if (dpcm->init_ring != 0) {
+					/* stop AO */
+					rpc_stop_svc(dpcm->phy_addr_rpc,
+						     dpcm->vaddr_rpc, dpcm->ao_agent_id | dpcm->ao_pin_id);
+				}
+			}
+
 			kref_put(&dmab_kref->ref, dmab_destroy);
 		} else {
 			pr_err("%s mmap_count is not zero! dma still alive\n", __func__);
 		}
 	}
 
-exit:
 	snd_pcm_set_runtime_buffer(substream, NULL);
 
 	return 0;
@@ -4431,18 +3963,7 @@ static int rtk_create_pcm_instance(struct snd_card *card,
 	case ENUM_AIN_AUDIO_V4:
 	case ENUM_AIN_LOOPBACK:
 	case ENUM_AIN_DMIC_PASSTHROUGH:
-	case ENUM_AIN_BTPCM_IN_PASSTHROUGH:
-	case ENUM_AIN_BTPCM_OUT_PASSTHROUGH:
 	case ENUM_AIN_PURE_DMIC:
-	case ENUM_AIN_BTPCM:
-	case ENUM_AIN_ANA1_IN:
-	case ENUM_AIN_ANA2_IN:
-	case ENUM_AIN_TDM_IN:
-	case ENUM_AIN_SPDIF_IN:
-	case ENUM_AIN_I2S1_IN:
-	case ENUM_AIN_I2S2_IN:
-	case ENUM_AIN_TDM1_IN:
-	case ENUM_AIN_TDM2_IN:
 		snd_pcm_set_ops(pcm,
 				SNDRV_PCM_STREAM_CAPTURE,
 				&snd_card_rtk_capture_ops);
@@ -4462,14 +3983,14 @@ static int rtk_create_pcm_instance(struct snd_card *card,
 
 	p = pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
 	for (i = 0; i < playback_substreams; i++) {
-		p->dma_buffer.dev.dev = pcm->card->dev;
+		p->dma_buffer.dev.dev = snd_dma_continuous_data(GFP_KERNEL);
 		p->dma_buffer.dev.type = SNDRV_DMA_TYPE_DEV_WC_SG;
 		p = p->next;
 	}
 
 	p = pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
 	for (i = 0; i < capture_substreams; i++) {
-		p->dma_buffer.dev.dev = pcm->card->dev;
+		p->dma_buffer.dev.dev = snd_dma_continuous_data(GFP_KERNEL);
 		p->dma_buffer.dev.type = SNDRV_DMA_TYPE_DEV_WC_SG;
 		p = p->next;
 	}
@@ -4486,10 +4007,7 @@ static void snd_rtk_playback_volume_work(struct work_struct *work)
 	struct rtk_snd_mixer *mixer =
 			container_of(work, struct rtk_snd_mixer, work_volume);
 
-	if (mixer->multi_ao)
-		rpc_set_volume_new(mixer->dev, mixer->mixer_volume[MIXER_ADDR_MASTER][0], mixer->ao_agent_id);
-	else
-		rpc_set_volume(mixer->dev, mixer->mixer_volume[MIXER_ADDR_MASTER][0]);
+	rpc_set_volume(mixer->dev, mixer->mixer_volume[MIXER_ADDR_MASTER][0]);
 }
 
 static void snd_rtk_10eq_work(struct work_struct *work)
@@ -4532,14 +4050,6 @@ static void snd_rtk_audio_delay_work(struct work_struct *work)
 	rpc_set_audio_delay(mixer->dev, mixer);
 }
 
-static void snd_rtk_mic_mute_work(struct work_struct *work)
-{
-	struct rtk_snd_mixer *mixer =
-			container_of(work, struct rtk_snd_mixer, work_mic_mute);
-
-	rpc_config_mic_mute(mixer->dev, mixer);
-}
-
 static int rtk_snd_mixer_new_mixer(struct snd_card *card,
 				   struct rtk_snd_mixer *mixer)
 {
@@ -4553,7 +4063,6 @@ static int rtk_snd_mixer_new_mixer(struct snd_card *card,
 	INIT_WORK(&mixer->work_32eq, snd_rtk_32eq_work);
 	INIT_WORK(&mixer->work_balance, snd_rtk_balance_work);
 	INIT_WORK(&mixer->work_audio_delay, snd_rtk_audio_delay_work);
-	INIT_WORK(&mixer->work_mic_mute, snd_rtk_mic_mute_work);
 
 	strncpy(card->mixername, "RTK_Mixer", sizeof(card->mixername));
 
@@ -4566,34 +4075,6 @@ static int rtk_snd_mixer_new_mixer(struct snd_card *card,
 		mixer->eq_mode[2].gain[idx] = 12;
 
 	mixer->eq_mode[0].mode = mixer->eq_mode[1].mode = mixer->eq_mode[2].mode = -1;
-	mixer->analog_in1_path[0] = 0;
-	mixer->analog_in2_path[0] = 1;
-	mixer->analog_in1_path[1] = -1;
-	mixer->analog_in2_path[1] = -1;
-	mixer->btpcm_in_path = 0;
-	mixer->btpcm_aec_en = 1;
-	mixer->btpcm_mode = 0;
-	mixer->btpcm_queue_buf = 256;
-	mixer->ana1_aec_en = 0;
-	mixer->ana2_aec_en = 0;
-	mixer->tdm_aec_en = 0;
-	mixer->ana1_agc[0] = mixer->ana2_agc[0] = 0;
-	mixer->ana1_agc[1] = mixer->ana2_agc[1] = 0;
-	mixer->ana1_dgc[0] = mixer->ana2_dgc[0] = 0;
-	mixer->ana1_dgc[1] = mixer->ana2_dgc[1] = 67;
-	mixer->ana1_dgc[2] = mixer->ana2_dgc[2] = 67;
-	mixer->btpcm_dbg[0] = mixer->btpcm_dbg[1] = 0;
-#ifdef MODULE_TEST_ONLY
-	mixer->ai_i2s0_mode = mixer->ai_i2s1_mode = mixer->ai_i2s2_mode = 0;
-	mixer->ai_tdm0_mode = mixer->ai_tdm1_mode = mixer->ai_tdm2_mode = 0;
-#else
-	mixer->ai_i2s0_mode = mixer->ai_i2s1_mode = mixer->ai_i2s2_mode = 1;
-	mixer->ai_tdm0_mode = mixer->ai_tdm1_mode = mixer->ai_tdm2_mode = 1;
-#endif
-	mixer->ana1_differential_en[0] = mixer->ana2_differential_en[0] = 0;
-	mixer->ana1_differential_en[1] = mixer->ana2_differential_en[1] = 0;
-	mixer->mic_mute_en[0] = 0;
-	mixer->mic_mute_en[1] = 0;
 
 	/* add snc_control */
 	for (idx = 0; idx < ARRAY_SIZE(rtk_snd_controls); idx++) {
@@ -4625,9 +4106,9 @@ static int snd_feature_ctrl_info(struct snd_kcontrol *kcontrol,
 		uinfo->value.integer.min = 0;
 		uinfo->value.integer.max = 31;
 	} else if (kcontrol->private_value == ENUM_DELAY_CONTROL) {
-		uinfo->count = MAX_DELAY_CH + 2;
+		uinfo->count = MAX_CAR_CH + 2;
 		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 4800;
+		uinfo->value.integer.max = 2000;
 	} else if (kcontrol->private_value == ENUM_10_TONE_CONTROL) {
 		uinfo->count = 11;
 		uinfo->value.integer.min = 0;
@@ -4640,99 +4121,6 @@ static int snd_feature_ctrl_info(struct snd_kcontrol *kcontrol,
 		uinfo->count = 33;
 		uinfo->value.integer.min = 0;
 		uinfo->value.integer.max = 24;
-	} else if (kcontrol->private_value == ENUM_ANALOG_IN1_PATH ||
-		   kcontrol->private_value == ENUM_ANALOG_IN2_PATH) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 3;
-	} else if (kcontrol->private_value == ENUM_BTPCM_PASSTHROUGH_AI_PATH) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 4;
-	} else if (kcontrol->private_value == ENUM_BTPCM_AEC_CONTROL) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_ANA1_AEC_CONTROL) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_ANA2_AEC_CONTROL) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_TDM_AEC_CONTROL) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_ANA1_AGC) {
-		uinfo->count = 2;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 3;
-	} else if (kcontrol->private_value == ENUM_ANA2_AGC) {
-		uinfo->count = 2;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 3;
-	} else if (kcontrol->private_value == ENUM_ANA1_DGC) {
-		uinfo->count = 3;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 255;
-	} else if (kcontrol->private_value == ENUM_ANA2_DGC) {
-		uinfo->count = 3;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 255;
-	} else if (kcontrol->private_value == ENUM_BTPCM_DEBUG) {
-		uinfo->count = 2;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_BTPCM_MIC_CH_SEL) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_AI_I2S0_MODE) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 3;
-	} else if (kcontrol->private_value == ENUM_AI_I2S1_MODE) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 3;
-	} else if (kcontrol->private_value == ENUM_AI_I2S2_MODE) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 3;
-	} else if (kcontrol->private_value == ENUM_ANA1_DIFFERENTIAL_EN) {
-		uinfo->count = 2;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_ANA2_DIFFERENTIAL_EN) {
-		uinfo->count = 2;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_MIC_MUTE_EN) {
-		uinfo->count = 2;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 4;
-	} else if (kcontrol->private_value == ENUM_AI_TDM0_MODE) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 2;
-	} else if (kcontrol->private_value == ENUM_AI_TDM1_MODE) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 2;
-	} else if (kcontrol->private_value == ENUM_AI_TDM2_MODE) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 2;
-	} else if (kcontrol->private_value == ENUM_BTPCM_MODE) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 1;
-	} else if (kcontrol->private_value == ENUM_BTPCM_QUEUE_BUF) {
-		uinfo->count = 1;
-		uinfo->value.integer.min = 0;
-		uinfo->value.integer.max = 500;
 	} else {
 		/* gain value region from 0~24 */
 		uinfo->count = 1;
@@ -4786,64 +4174,6 @@ static int snd_feature_ctrl_get(struct snd_kcontrol *kcontrol,
 			ucontrol->value.integer.value[0] = 1;
 		for (ch=0; ch<32; ch++)
 			ucontrol->value.integer.value[ch+1] = mixer->eq_mode[band_num].gain[ch];
-	} else if (band_num == ENUM_ANALOG_IN1_PATH) {
-		ucontrol->value.integer.value[0] = mixer->analog_in1_path[0];
-	} else if (band_num == ENUM_ANALOG_IN2_PATH) {
-		ucontrol->value.integer.value[0] = mixer->analog_in2_path[0];
-	} else if (band_num == ENUM_BTPCM_PASSTHROUGH_AI_PATH) {
-		ucontrol->value.integer.value[0] = mixer->btpcm_in_path;
-	} else if (band_num == ENUM_BTPCM_AEC_CONTROL) {
-		ucontrol->value.integer.value[0] = mixer->btpcm_aec_en;
-	} else if (band_num == ENUM_ANA1_AEC_CONTROL) {
-		ucontrol->value.integer.value[0] = mixer->ana1_aec_en;
-	} else if (band_num == ENUM_ANA2_AEC_CONTROL) {
-		ucontrol->value.integer.value[0] = mixer->ana2_aec_en;
-	} else if (band_num == ENUM_TDM_AEC_CONTROL) {
-		ucontrol->value.integer.value[0] = mixer->tdm_aec_en;
-	} else if (band_num == ENUM_ANA1_AGC) {
-		ucontrol->value.integer.value[0] = mixer->ana1_agc[0];
-		ucontrol->value.integer.value[1] = mixer->ana1_agc[1];
-	} else if (band_num == ENUM_ANA2_AGC) {
-		ucontrol->value.integer.value[0] = mixer->ana2_agc[0];
-		ucontrol->value.integer.value[1] = mixer->ana2_agc[1];
-	} else if (band_num == ENUM_ANA1_DGC) {
-		ucontrol->value.integer.value[0] = mixer->ana1_dgc[0];
-		ucontrol->value.integer.value[1] = mixer->ana1_dgc[1];
-		ucontrol->value.integer.value[2] = mixer->ana1_dgc[2];
-	} else if (band_num == ENUM_ANA2_DGC) {
-		ucontrol->value.integer.value[0] = mixer->ana2_dgc[0];
-		ucontrol->value.integer.value[1] = mixer->ana2_dgc[1];
-		ucontrol->value.integer.value[2] = mixer->ana2_dgc[2];
-	} else if (band_num == ENUM_BTPCM_DEBUG) {
-		ucontrol->value.integer.value[0] = mixer->btpcm_dbg[0];
-		ucontrol->value.integer.value[1] = mixer->btpcm_dbg[1];
-	} else if (band_num == ENUM_BTPCM_MIC_CH_SEL) {
-		ucontrol->value.integer.value[0] = mixer->btpcm_mic_ch;
-	} else if (band_num == ENUM_AI_I2S0_MODE) {
-		ucontrol->value.integer.value[0] = mixer->ai_i2s0_mode;
-	} else if (band_num == ENUM_AI_I2S1_MODE) {
-		ucontrol->value.integer.value[0] = mixer->ai_i2s1_mode;
-	} else if (band_num == ENUM_AI_I2S2_MODE) {
-		ucontrol->value.integer.value[0] = mixer->ai_i2s2_mode;
-	} else if (band_num == ENUM_ANA1_DIFFERENTIAL_EN) {
-		ucontrol->value.integer.value[0] = mixer->ana1_differential_en[0];
-		ucontrol->value.integer.value[1] = mixer->ana1_differential_en[1];
-	} else if (band_num == ENUM_ANA2_DIFFERENTIAL_EN) {
-		ucontrol->value.integer.value[0] = mixer->ana2_differential_en[0];
-		ucontrol->value.integer.value[1] = mixer->ana2_differential_en[1];
-	} else if (band_num == ENUM_MIC_MUTE_EN) {
-		ucontrol->value.integer.value[0] = mixer->mic_mute_en[0];
-		ucontrol->value.integer.value[1] = mixer->mic_mute_en[1];
-	} else if (band_num == ENUM_AI_TDM0_MODE) {
-		ucontrol->value.integer.value[0] = mixer->ai_tdm0_mode;
-	} else if (band_num == ENUM_AI_TDM1_MODE) {
-		ucontrol->value.integer.value[0] = mixer->ai_tdm1_mode;
-	} else if (band_num == ENUM_AI_TDM2_MODE) {
-		ucontrol->value.integer.value[0] = mixer->ai_tdm2_mode;
-	} else if (band_num == ENUM_BTPCM_MODE) {
-		ucontrol->value.integer.value[0] = mixer->btpcm_mode;
-	} else if (band_num == ENUM_BTPCM_QUEUE_BUF) {
-		ucontrol->value.integer.value[0] = mixer->btpcm_queue_buf;
 	} else {
 		pr_err("unknown kcontrol!!\n");
 	}
@@ -4919,64 +4249,6 @@ static int snd_feature_ctrl_put(struct snd_kcontrol *kcontrol,
 			change |= value != mixer->eq_mode[band_num].gain[ch];
 			mixer->eq_mode[band_num].gain[ch] = value;
 		}
-	} else if (band_num == ENUM_ANALOG_IN1_PATH) {
-		mixer->analog_in1_path[0] = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_ANALOG_IN2_PATH) {
-		mixer->analog_in2_path[0] = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_BTPCM_PASSTHROUGH_AI_PATH) {
-		mixer->btpcm_in_path = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_BTPCM_AEC_CONTROL) {
-		mixer->btpcm_aec_en = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_ANA1_AEC_CONTROL) {
-		mixer->ana1_aec_en = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_ANA2_AEC_CONTROL) {
-		mixer->ana2_aec_en = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_TDM_AEC_CONTROL) {
-		mixer->tdm_aec_en = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_ANA1_AGC) {
-		mixer->ana1_agc[0] = ucontrol->value.integer.value[0];
-		mixer->ana1_agc[1] = ucontrol->value.integer.value[1];
-	} else if (band_num == ENUM_ANA2_AGC) {
-		mixer->ana2_agc[0] = ucontrol->value.integer.value[0];
-		mixer->ana2_agc[1] = ucontrol->value.integer.value[1];
-	} else if (band_num == ENUM_ANA1_DGC) {
-		mixer->ana1_dgc[0] = ucontrol->value.integer.value[0];
-		mixer->ana1_dgc[1] = ucontrol->value.integer.value[1];
-		mixer->ana1_dgc[2] = ucontrol->value.integer.value[2];
-	} else if (band_num == ENUM_ANA2_DGC) {
-		mixer->ana2_dgc[0] = ucontrol->value.integer.value[0];
-		mixer->ana2_dgc[1] = ucontrol->value.integer.value[1];
-		mixer->ana2_dgc[2] = ucontrol->value.integer.value[2];
-	} else if (band_num == ENUM_BTPCM_DEBUG) {
-		mixer->btpcm_dbg[0] = ucontrol->value.integer.value[0];
-		mixer->btpcm_dbg[1] = ucontrol->value.integer.value[1];
-	} else if (band_num == ENUM_BTPCM_MIC_CH_SEL) {
-		mixer->btpcm_mic_ch = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_AI_I2S0_MODE) {
-		mixer->ai_i2s0_mode = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_AI_I2S1_MODE) {
-		mixer->ai_i2s1_mode = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_AI_I2S2_MODE) {
-		mixer->ai_i2s2_mode = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_ANA1_DIFFERENTIAL_EN) {
-		mixer->ana1_differential_en[0] = ucontrol->value.integer.value[0];
-		mixer->ana1_differential_en[1] = ucontrol->value.integer.value[1];
-	} else if (band_num == ENUM_ANA2_DIFFERENTIAL_EN) {
-		mixer->ana2_differential_en[0] = ucontrol->value.integer.value[0];
-		mixer->ana2_differential_en[1] = ucontrol->value.integer.value[1];
-	} else if (band_num == ENUM_MIC_MUTE_EN) {
-		mixer->mic_mute_en[0] = ucontrol->value.integer.value[0];
-		mixer->mic_mute_en[1] = ucontrol->value.integer.value[1];
-	} else if (band_num == ENUM_AI_TDM0_MODE) {
-		mixer->ai_tdm0_mode = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_AI_TDM1_MODE) {
-		mixer->ai_tdm1_mode = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_AI_TDM2_MODE) {
-		mixer->ai_tdm2_mode = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_BTPCM_MODE) {
-		mixer->btpcm_mode = ucontrol->value.integer.value[0];
-	} else if (band_num == ENUM_BTPCM_QUEUE_BUF) {
-		mixer->btpcm_queue_buf = ucontrol->value.integer.value[0];
 	} else {
 		pr_err("unknown kcontrol!!\n");
 	}
@@ -4993,8 +4265,6 @@ static int snd_feature_ctrl_put(struct snd_kcontrol *kcontrol,
 		schedule_work(&mixer->work_16eq);
 	else if (band_num == ENUM_32_TONE_CONTROL)
 		schedule_work(&mixer->work_32eq);
-	else if (band_num == ENUM_MIC_MUTE_EN)
-		schedule_work(&mixer->work_mic_mute);
 
 	return change;
 }
@@ -5233,12 +4503,7 @@ static int snd_card_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *np = pdev->dev.of_node;
 	struct rtk_snd_mixer *mixer;
-	const struct snd_card_data *data;
-	phys_addr_t dat;
-	void *vaddr;
-	int pin_id;
 	int err;
-	int amic_bias;
 
 	alsa_dev = devm_kzalloc(dev, sizeof(*alsa_dev), GFP_KERNEL);
 	if (!alsa_dev)
@@ -5257,8 +4522,6 @@ static int snd_card_probe(struct platform_device *pdev)
 
 		snd_ept_init(hifi_ept_info);
 	}
-
-	data = of_device_get_match_data(dev);
 
 	/* Get destionation of loopback secure */
 	err = of_property_read_u32(np, "loopback-secure-buf", &alsa_dev->lb_secure_buf);
@@ -5287,27 +4550,16 @@ static int snd_card_probe(struct platform_device *pdev)
 	mixer = (struct rtk_snd_mixer *)card->private_data;
 	mixer->dev = dev;
 
-	err = rtk_create_pcm_instance(card, ENUM_AIN_HDMIRX, 2, 0);
+	err = rtk_create_pcm_instance(card, ENUM_AIN_HDMIRX, 2, 1);
 	err |= rtk_create_pcm_instance(card, ENUM_AIN_I2S, 1, 1);
 	err |= rtk_create_pcm_instance(card, ENUM_AIN_NON_PCM, 1, 0);
 	err |= rtk_create_pcm_instance(card, ENUM_AIN_AEC_DMIC, 1, 1);
 	err |= rtk_create_pcm_instance(card, ENUM_AIN_AEC_I2S, 1, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_AUDIO_V3, 1, 0);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_AUDIO_V4, 1, 0);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_LOOPBACK, 1, 1);
+	err |= rtk_create_pcm_instance(card, ENUM_AIN_AUDIO_V3, 0, 0);
+	err |= rtk_create_pcm_instance(card, ENUM_AIN_AUDIO_V4, 0, 0);
+	err |= rtk_create_pcm_instance(card, ENUM_AIN_LOOPBACK, 0, 1);
 	err |= rtk_create_pcm_instance(card, ENUM_AIN_DMIC_PASSTHROUGH, 0, 0);
 	err |= rtk_create_pcm_instance(card, ENUM_AIN_PURE_DMIC, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_BTPCM, 1, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_BTPCM_OUT_PASSTHROUGH, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_BTPCM_IN_PASSTHROUGH, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_ANA1_IN, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_ANA2_IN, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_TDM_IN, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_SPDIF_IN, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_I2S1_IN, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_I2S2_IN, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_TDM1_IN, 0, 1);
-	err |= rtk_create_pcm_instance(card, ENUM_AIN_TDM2_IN, 0, 1);
 	if (err < 0) {
 		pr_err("[%s create instance fail]\n", __func__);
 		goto __nodev;
@@ -5318,8 +4570,6 @@ static int snd_card_probe(struct platform_device *pdev)
 		pr_err("[%s add mixer fail]\n", __func__);
 		goto __nodev;
 	}
-
-	of_property_read_u32(np, "multi-ao", &mixer->multi_ao);
 
 	strncpy(card->driver, "rtk_snd_hifi", sizeof(card->driver));
 	strncpy(card->shortname, "rtk_snd_hifi", sizeof(card->shortname));
@@ -5345,29 +4595,6 @@ static int snd_card_probe(struct platform_device *pdev)
 		pr_err("[%s card register fail]\n", __func__);
 		goto __nodev;
 	}
-
-	if (data->card_id == 1)
-		pin_id = AUDIO_ALSA_OUT;
-	if (data->card_id == 2)
-		pin_id = AUDIO_OUT2;
-
-	rheap_setup_dma_pools(dev, "rtk_media_heap", RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC | RTK_FLAG_ACPUACC, __func__);
-	vaddr = dma_alloc_coherent(dev, SZ_4K, &dat, GFP_KERNEL);
-	if (!vaddr) {
-		dev_err(dev, "%s dma_alloc fail\n", __func__);
-		err = -ENOMEM;
-		goto __nodev;
-	}
-
-	if (rpc_create_ao_agent(dat, vaddr, &alsa_dev->ao_agent_id, pin_id)) {
-		pr_err("[No AO agent %s %d]\n", __func__, __LINE__);
-		return -1;
-	}
-
-	if (!of_property_read_u32(np, "amic-bias", &amic_bias))
-		rpc_config_amic_voltage(dat, vaddr, 1, amic_bias);
-
-	dma_free_coherent(dev, SZ_4K, vaddr, dat);
 
 	platform_set_drvdata(pdev, alsa_dev);
 	dev_info(dev, "initialized\n");

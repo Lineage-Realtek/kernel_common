@@ -33,18 +33,17 @@ extern struct rtk_krpc_ept_info *hifi_ept_info;
 				SNDRV_PCM_RATE_88200 | \
 				SNDRV_PCM_RATE_96000 | \
 				SNDRV_PCM_RATE_176400 | \
-				SNDRV_PCM_RATE_192000 | \
-				SNDRV_PCM_RATE_384000)
+				SNDRV_PCM_RATE_192000)
 
-#define RTK_DMP_PLAYBACK_RATE_MIN       8000
-#define RTK_DMP_PLAYBACK_RATE_MAX       384000
+#define RTK_DMP_PLAYBACK_RATE_MIN       16000
+#define RTK_DMP_PLAYBACK_RATE_MAX       192000
 #define RTK_DMP_PLAYBACK_CHANNELS_MIN   1
 #define RTK_DMP_PLAYBACK_CHANNELS_MAX   8
-#define RTK_DMP_PLAYBACK_MAX_BUFFER_SIZE         (4096 * 1024)
+#define RTK_DMP_PLAYBACK_MAX_BUFFER_SIZE         (192 * 1024)
 #define RTK_DMP_PLAYBACK_MIN_PERIOD_SIZE         1024
-#define RTK_DMP_PLAYBACK_MAX_PERIOD_SIZE         (2048 * 1024)
-#define RTK_DMP_PLAYBACK_PERIODS_MIN             2
-#define RTK_DMP_PLAYBACK_PERIODS_MAX             4096
+#define RTK_DMP_PLAYBACK_MAX_PERIOD_SIZE         (24 * 1024)
+#define RTK_DMP_PLAYBACK_PERIODS_MIN             4
+#define RTK_DMP_PLAYBACK_PERIODS_MAX             1024
 #define RTK_DMP_PLAYBACK_FIFO_SIZE               32
 
 /* capture */
@@ -59,17 +58,12 @@ extern struct rtk_krpc_ept_info *hifi_ept_info;
 				SNDRV_PCM_RATE_22050 | \
 				SNDRV_PCM_RATE_32000 | \
 				SNDRV_PCM_RATE_44100 | \
-				SNDRV_PCM_RATE_48000 | \
-				SNDRV_PCM_RATE_88200 | \
-				SNDRV_PCM_RATE_96000 | \
-				SNDRV_PCM_RATE_176400 | \
-				SNDRV_PCM_RATE_192000 | \
-				SNDRV_PCM_RATE_384000)
+				SNDRV_PCM_RATE_48000)
 
-#define RTK_DMP_CAPTURE_RATE_MIN 8000
-#define RTK_DMP_CAPTURE_RATE_MAX 384000
-#define RTK_DMP_CAPTURE_CHANNELS_MIN 1
-#define RTK_DMP_CAPTURE_CHANNELS_MAX 8
+#define RTK_DMP_CAPTURE_RATE_MIN 16000
+#define RTK_DMP_CAPTURE_RATE_MAX 48000
+#define RTK_DMP_CAPTURE_CHANNELS_MIN 2
+#define RTK_DMP_CAPTURE_CHANNELS_MAX 2
 #define RTK_DMP_CAPTURE_MAX_BUFFER_SIZE         RTK_DMP_PLAYBACK_MAX_BUFFER_SIZE
 #define RTK_DMP_CAPTURE_MIN_PERIOD_SIZE         RTK_DMP_PLAYBACK_MIN_PERIOD_SIZE
 #define RTK_DMP_CAPTURE_MAX_PERIOD_SIZE         (16 * 1024)
@@ -83,8 +77,8 @@ extern struct rtk_krpc_ept_info *hifi_ept_info;
 #define RTK_ENC_LPCM_BUFFER_SIZE        (32 * 1024)
 #define RTK_ENC_PTS_BUFFER_SIZE         (8 * 1024)
 #define RTK_AI_PACK_BUFFER_SIZE		(64 * 1024)
-#define MAX_CAR_CH 32
-#define MAX_DELAY_CH 32
+#define MAX_CAR_CH 16
+#define MAX_DELAY_CH 8
 
 #define HIFI_AEC_SETUP 0x10000030
 #define HIFI_AEC_RUN   0x10000031
@@ -101,42 +95,6 @@ enum CAPTURE_TYPE {
 	ENUM_AIN_LOOPBACK = 7,
 	ENUM_AIN_DMIC_PASSTHROUGH = 8,
 	ENUM_AIN_PURE_DMIC = 9,
-	ENUM_AIN_BTPCM = 10,
-	ENUM_AIN_BTPCM_OUT_PASSTHROUGH = 11,
-	ENUM_AIN_BTPCM_IN_PASSTHROUGH = 12,
-	ENUM_AIN_ANA1_IN = 13,
-	ENUM_AIN_ANA2_IN = 14,
-	ENUM_AIN_TDM_IN = 15,
-	ENUM_AIN_SPDIF_IN = 16,
-	ENUM_AIN_I2S1_IN = 17,
-	ENUM_AIN_I2S2_IN = 18,
-	ENUM_AIN_TDM1_IN = 19,
-	ENUM_AIN_TDM2_IN = 20,
-};
-
-enum ENUM_AUDIO_AIN_HW_TYPE{
-	ENUM_AUDIO_AIN_HW_HDMI = 0,
-	ENUM_AUDIO_AIN_HW_I2S,
-	ENUM_AUDIO_AIN_HW_ANALOG,
-	ENUM_AUDIO_AIN_HW_AMIC,
-	ENUM_AUDIO_AIN_HW_DMIC,
-	ENUM_AUDIO_AIN_HW_SPF_OPTICAL,
-	ENUM_AUDIO_AIN_HW_SPF_COAXIAL,
-	ENUM_AUDIO_AIN_HW_ARC,
-	ENUM_AUDIO_AIN_HW_TDM,
-	ENUM_AUDIO_AIN_HW_EARC,
-	ENUM_AUDIO_AIN_HW_AO_I2S_LOOPBACK,
-	ENUM_AUDIO_AIN_HW_AO_SPDIF_LOOPBACK,
-	ENUM_AUDIO_AIN_HW_AO_HDMI_LOOPBACK,
-	ENUM_AUDIO_AIN_HW_I2S_1,
-	ENUM_AUDIO_AIN_HW_I2S_2,
-	ENUM_AUDIO_AIN_HW_I2S_3,  /* not used */
-	ENUM_AUDIO_AIN_HW_TDM_1,
-	ENUM_AUDIO_AIN_HW_TDM_2,
-	ENUM_AUDIO_AIN_HW_TDM_3,  /* not used */
-	ENUM_AUDIO_AIN_HW_BTPCM,
-	ENUM_AUDIO_AIN_HW_ANALOG_1,
-	ENUM_AUDIO_AIN_HW_NONE
 };
 
 enum PLAYBACK_TYPE {
@@ -151,30 +109,6 @@ enum EQ_BAND_TYPE {
 	ENUM_TONE_CONTROL_MAX = 3,
 	ENUM_BALANCE_CONTROL = 60,
 	ENUM_DELAY_CONTROL = 61,
-	ENUM_ANALOG_IN1_PATH = 62,
-	ENUM_ANALOG_IN2_PATH = 63,
-	ENUM_BTPCM_PASSTHROUGH_AI_PATH = 64,
-	ENUM_BTPCM_AEC_CONTROL = 65,
-	ENUM_ANA1_AEC_CONTROL = 66,
-	ENUM_ANA2_AEC_CONTROL = 67,
-	ENUM_TDM_AEC_CONTROL = 68,
-	ENUM_ANA1_AGC = 69,
-	ENUM_ANA2_AGC = 70,
-	ENUM_ANA1_DGC = 71,
-	ENUM_ANA2_DGC = 72,
-	ENUM_BTPCM_DEBUG = 73,
-	ENUM_BTPCM_MIC_CH_SEL = 74,
-	ENUM_AI_I2S0_MODE=75,
-	ENUM_AI_I2S1_MODE=76,
-	ENUM_AI_I2S2_MODE=77,
-	ENUM_ANA1_DIFFERENTIAL_EN = 78,
-	ENUM_ANA2_DIFFERENTIAL_EN = 79,
-	ENUM_MIC_MUTE_EN = 80,
-	ENUM_AI_TDM0_MODE= 81,
-	ENUM_AI_TDM1_MODE= 82,
-	ENUM_AI_TDM2_MODE= 83,
-	ENUM_BTPCM_MODE= 84,
-	ENUM_BTPCM_QUEUE_BUF = 85,
 };
 
 #define MAX_PCM_DEVICES     1
@@ -237,13 +171,6 @@ struct audio_rpc_privateinfo_parameters {
 	volatile int private_info[16];
 };
 
-struct audio_rpc_privateinfo_parameters_ext {
-	int instance_id;
-	enum AUDIO_ENUM_PRIVAETINFO type;
-	volatile int private_info[16];
-	short parameter[32];
-};
-
 struct audio_rpc_privateinfo_returnval {
 	int instance_id;
 	volatile int private_info[16];
@@ -265,66 +192,6 @@ struct rpc_create_pcm_decoder_ctrl_t {
 	struct audio_rpc_instance instance;
 	struct rpcres_long res;
 	u32 ret;
-};
-
-struct rpc_btpcm_config {
-	int version;    	// upgrade when data members changed.
-	int pcm_clk_fs; 	// 0x98000360[3:1]
-	char pcm_bits;  	// 0x98006A10[3]
-	char slave_mode; 	// 0x98006A10[4], 0:master, 1:slave
-	char format;    	// 0x98006A10[6:5]
-	char padding_sel; 	// 0x98006A10[20:19]
-	char slot_mode; 	// 0x98006A10[23:21]
-	unsigned char frame_thld;   // 0x98006A10[18:11]
-	char rvd2;
-	char rvd3;
-	int rvd[15];
-};
-
-enum ENUM_I2S_MODE_USER
-{
-	ENUM_AI_I2S_SHARE = 0,
-	ENUM_AI_I2S_MASTER,
-	ENUM_AI_I2S_SLAVE,
-	ENUM_AI_I2S_SLAVE_ENFORCE,
-};
-
-enum ENUM_I2S_MODE
-{
-	ENUM_AI_I2S_PIN_SHARE = 0,  // using AO i2s0
-	ENUM_AI_I2S_PIN_INDEPENDENT_MASTER,
-	ENUM_AI_I2S_PIN_INDEPENDENT_SLAVE,
-	ENUM_AI_I2S_PIN_SHARE_AO_I2S1,  // using AO i2s1
-	ENUM_AI_I2S_PIN_SHARE_AO_I2S2,  // using AO i2s2
-	ENUM_AI_I2S_PIN_SHARE_AI_I2S0,  // using AI i2s0
-	ENUM_AI_I2S_PIN_SLAVE_ENFORCE,  // using AI i2s0
-	ENUM_AI_I2S_PIN_SHARE_TOTAL // keep the last
-};
-
-enum ENUM_TDM_MODE
-{
-	ENUM_TDM_PIN_SHARE_NONE = 0,
-	ENUM_TDM_PIN_SHARE_AO_TDM_0,
-	ENUM_TDM_PIN_SHARE_AO_TDM_1,
-	ENUM_TDM_PIN_SHARE_AO_TDM_2,
-	ENUM_TDM_PIN_SHARE_AI_TDM_0,
-};
-
-struct rpc_tdmin_config {
-	int version;
-	int data_format;
-	int bclk;
-	int lrck;
-	int sample_rate;
-	char i2s_channel_len;
-	char slave_mode;
-	char channel_num;
-	char slot;
-	char data_len;
-	char tdm_channel_len;
-	char pin_share;
-	char rvd1[1];
-	int rvd[7];
 };
 
 struct audio_rpc_ringbuffer_header {
@@ -551,29 +418,10 @@ enum {
 	ENUM_ANA2_IN = 4,
 };
 
-struct audio_analog_hw_config {
-	char amic_voltage;
-	char analog_gain_l;
-	char digital_gain_l;
-	char amic_differential_l;
-	char digital_gain_en;
-	char digital_gain_r;
-	char analog_gain_r;
-	char amic_differential_r;
-	int rvd[2];
-};
-
 struct audio_rpc_aio_privateinfo_parameters {
 	int instance_id;
 	enum AUDIO_ENUM_AIO_PRIVAETINFO type;
 	int argate_info[16];
-};
-
-struct audio_rpc_aio_privateinfo_parameters_ext {
-	int instance_id;
-	enum AUDIO_ENUM_AIO_PRIVAETINFO type;
-	int argate_info[16];
-	short parameter[32];
 };
 
 struct audio_rpc_dec_privateinfo_parameters {
@@ -584,14 +432,8 @@ struct audio_rpc_dec_privateinfo_parameters {
 
 struct audio_mixing_index {
 	int enable;
-	int mixing_channel[32];
+	int mixing_channel[MAX_CAR_CH];
 	int reserved[15];
-};
-
-struct audio_channel_index {
-	int enable;
-	int index[2];
-	int reserved[29];
 };
 
 struct audio_equalizer_mode {
@@ -602,7 +444,8 @@ struct audio_equalizer_mode {
 struct audio_delay_ctrl {
 	int mode;
 	int is_enable;
-	short ch_delay_time[MAX_DELAY_CH];
+	int ch_delay_time[MAX_DELAY_CH];
+	int reserved[22];
 };
 
 struct audio_equalizer_config {
@@ -643,30 +486,6 @@ struct rtk_snd_mixer {
 	int balance[MAX_CAR_CH];
 	int dec_volume;
 	int mixing_cnt;
-	int analog_in1_path[2];
-	int analog_in2_path[2];
-	int btpcm_in_path;
-	int btpcm_aec_en;
-	int btpcm_mode;
-	int btpcm_queue_buf;
-	int ana1_aec_en;
-	int ana2_aec_en;
-	int tdm_aec_en;
-	int ana1_agc[2];
-	int ana2_agc[2];
-	int ana1_dgc[3];
-	int ana2_dgc[3];
-	int btpcm_dbg[2];
-	int btpcm_mic_ch;
-	int ai_i2s0_mode;
-	int ai_i2s1_mode;
-	int ai_i2s2_mode;
-	int ai_tdm0_mode;
-	int ai_tdm1_mode;
-	int ai_tdm2_mode;
-	int ana1_differential_en[2];
-	int ana2_differential_en[2];
-	int mic_mute_en[2];
 	struct work_struct work_volume;
 	struct work_struct work_10eq;
 	struct work_struct work_16eq;
@@ -675,13 +494,10 @@ struct rtk_snd_mixer {
 	struct work_struct work_audio_delay;
 	struct work_struct work_mixing_idx;
 	struct work_struct work_dec_volume;
-	struct work_struct work_mic_mute;
 	struct audio_ext_equalizer_mode eq_mode[ENUM_TONE_CONTROL_MAX];
 	struct audio_mixing_index mixing_idx;
-	struct audio_channel_index channel_idx;
 	struct audio_delay_ctrl delay_ctrl;
 	int ao_agent_id;
-	int multi_ao;
 };
 
 /* RTK PCM instance */
@@ -694,7 +510,6 @@ struct snd_rtk_pcm {
 	struct ringbuffer_header *dec_inband_ring;
 	struct ringbuffer_header *dec_inring;
 	struct audio_mixing_index mixing_idx;
-	struct audio_channel_index channel_idx;
 
 	snd_pcm_uframes_t hw_ptr;
 	snd_pcm_uframes_t prehw_ptr;
@@ -707,11 +522,6 @@ struct snd_rtk_pcm {
 	mm_segment_t fs;
 #endif
 
-	/* hrtimer member */
-	struct hrtimer hr_timer;
-	enum hrtimer_restart en_hr_timer;
-	ktime_t ktime;
-
 	int dec_agent_id;
 	int dec_pin_id;
 	int ao_agent_id;
@@ -723,7 +533,6 @@ struct snd_rtk_pcm {
 	int playback_mode; /* 0: Legacy, 1: skip decode, 2: AO2 */
 	int dec_out_msec;
 	int set_mixing_index;
-	int set_channel_index;
 	int *g_sharemem_ptr;
 	struct alsa_latency_info *g_sharemem_ptr2;
 	struct alsa_latency_info *g_sharemem_ptr3;
@@ -750,7 +559,6 @@ struct snd_rtk_cap_pcm {
 	struct ringbuffer_header *airing[8];
 	struct ringbuffer_header *lb_airing[8];
 	struct ringbuffer_header *lpcm_ring;
-	struct ringbuffer_header *lpcm_pack_ring;
 	struct ringbuffer_header *lb_lpcm_ring;
 	struct ringbuffer_header *mix_lpcm_ring;
 	struct ringbuffer_header *pts_ring_hdr;
@@ -771,19 +579,16 @@ struct snd_rtk_cap_pcm {
 	int aec_feature;
 	int dmic_volume[2];
 	unsigned int *lpcm_data;
-	unsigned int *lpcm_pack_data;
 	unsigned int *lb_lpcm_data;
 	unsigned int *mix_lpcm_data;
 	unsigned int period_bytes;
 	unsigned int frame_bytes;
 	unsigned int ring_size;
 	unsigned int lpcm_ring_size;
-	unsigned int lpcm_pack_ring_size;
 	unsigned int mix_lpcm_ring_size;
 	phys_addr_t phy_airing_data[8];
 	phys_addr_t phy_lb_airing_data[8];
 	phys_addr_t phy_lpcm_data;
-	phys_addr_t phy_lpcm_pack_data;
 	phys_addr_t phy_lb_lpcm_data;
 	phys_addr_t phy_mix_lpcm_data;
 	phys_addr_t phy_addr;
@@ -792,7 +597,6 @@ struct snd_rtk_cap_pcm {
 	phys_addr_t phy_lb_airing[8];
 	phys_addr_t phy_pts_ring_hdr;
 	phys_addr_t phy_lpcm_ring;
-	phys_addr_t phy_lpcm_pack_ring;
 	phys_addr_t phy_lb_lpcm_ring;
 	phys_addr_t phy_mix_lpcm_ring;
 	struct alsa_mem_info pts_mem;
@@ -829,7 +633,6 @@ struct ai_gain_set {
 #define SNDRV_PCM_IOCTL_DMIC_VOL_SET _IOW('A', 0xE6, int)
 #define SNDRV_PCM_IOCTL_MIX_IDX_SET  _IOW('A', 0xE7, struct audio_mixing_index)
 #define SNDRV_PCM_IOCTL_AI_GAIN_SET  _IOW('A', 0xE8, struct ai_gain_set)
-#define SNDRV_PCM_IOCTL_CHANNEL_IDX_SET  _IOW('A', 0xE9, struct audio_channel_index)
 /************************************************************************/
 /* PROTOTYPE                                                            */
 /************************************************************************/
@@ -850,13 +653,13 @@ int rpc_stop_svc(phys_addr_t paddr, void *vaddr, int instance_id);
 int rpc_create_ao_agent(phys_addr_t paddr, void *vaddr, int *ao_id, int pin_id);
 int rpc_get_ao_flash_pin(phys_addr_t paddr, void *vaddr, int ao_agent_id);
 int rpc_create_decoder_agent(phys_addr_t paddr, void *vaddr, int *dec_id, int *pin_id);
-int rpc_set_ao_flash_volume(struct device *dev, int agent_id, int pin_id, int volume);
+int rpc_set_ao_flash_volume(phys_addr_t paddr, void *vaddr,
+			    struct snd_rtk_pcm *dpcm);
 int rpc_release_ao_flash_pin(phys_addr_t paddr, void *vaddr, int ao_agent_id, int ao_pin_id);
 int rpc_set_volume(struct device *dev, int volume);
-int rpc_set_volume_new(struct device *dev, int volume, int id);
 int rpc_get_volume(phys_addr_t paddr, void *vaddr);
 int rpc_put_share_memory_latency(phys_addr_t paddr, void *vaddr,
-				 void *p, void *p2, int dec_id, int ao_id, int ao_agent_id, int type);
+				 void *p, void *p2, int dec_id, int ao_id, int type);
 int rpc_create_ai_agent(phys_addr_t paddr, void *vaddr, int *ai_id);
 int rpc_ai_connect_alsa(phys_addr_t paddr, void *vaddr,
 			struct snd_pcm_runtime *runtime,
@@ -867,11 +670,6 @@ int rpc_ai_config_audio_in(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pc
 int rpc_ai_config_loopback_in(phys_addr_t paddr, void *vaddr,
 				  int instance_id, int loopback_type);
 int rpc_ai_config_dmic_in(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm);
-int rpc_ai_config_btpcm_in(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm);
-int rpc_ao_config_btpcm_out(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm);
-int rpc_ai_config_tdm_in(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm);
-int rpc_ai_config_spdif_in(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm);
-int rpc_ai_config_analog_in(phys_addr_t paddr, void *vaddr, struct snd_pcm_runtime *runtime);
 int rpc_destroy_ai_flow_svc(phys_addr_t paddr, void *vaddr,
 			    int instance_id, int hw_configed);
 int rpc_ai_config_nonpcm_in(phys_addr_t paddr, void *vaddr,
@@ -886,14 +684,9 @@ int rpc_set_eq(struct device *dev, struct audio_equalizer_mode *eq_mode);
 int rpc_set_ext_eq(struct device *dev, struct audio_ext_equalizer_mode *ext_eq_mode, int id);
 int rpc_set_balance(struct device *dev, struct rtk_snd_mixer *mixer);
 int rpc_set_audio_delay(struct device *dev, struct rtk_snd_mixer *mixer);
-int rpc_set_btpcm_config(phys_addr_t paddr, void *vaddr, struct rtk_snd_mixer *mixer);
-int rpc_set_btpcm_queue_buf(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm);
-int rpc_set_tdmin_config(phys_addr_t paddr, void *vaddr, struct snd_pcm_runtime *runtime);
 int rpc_run_aec(void);
 int rpc_stop_aec(void);
 int rpc_setup_aec(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm, struct snd_pcm_runtime *runtime);
-int rpc_setup_aec_test(phys_addr_t paddr, void *vaddr, struct snd_rtk_cap_pcm *dpcm, struct snd_pcm_runtime *runtime);
-int rpc_set_ai_gain_volume(struct device *dev, int ai_agent_id, struct ai_gain_set *ai_gain_param);
-int rpc_config_amic_voltage(phys_addr_t paddr, void *vaddr, int en, int voltage);
-int rpc_config_mic_mute(struct device *dev, struct rtk_snd_mixer *mixer);
+int rpc_set_ai_gain_volume(phys_addr_t paddr, void *vaddr, int ai_agent_id,
+			   struct ai_gain_set *ai_gain_param);
 #endif /* SND_HIFI_REALTEK_H */
