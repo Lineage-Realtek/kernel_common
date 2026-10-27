@@ -112,6 +112,18 @@ Contact:	"Yangtao Li" <frank.li@vivo.com>
 Description:	Controls the maximum ordered discard, the unit size is one block(4KB).
 		Set it to 16 by default.
 
+What:		/sys/fs/f2fs/<disk>/discard_io_aware
+Date:		November 2023
+Contact:	"Chao Yu" <chao@kernel.org>
+Description:	It controls to enable/disable IO aware feature for background discard.
+		By default, the value is 1 which indicates IO aware is on.
+
+		==========  ======================
+		value       description
+		discard_io_aware = 0   disable IO aware
+		discard_io_aware = 1   enable IO aware
+		==========  ======================
+
 What:		/sys/fs/f2fs/<disk>/max_discard_request
 Date:		December 2021
 Contact:	"Konstantin Vyshetsky" <vkon@google.com>
