@@ -6,62 +6,12 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/module.h>
-#include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/mutex.h>
 #include <linux/rbtree.h>
 #include "hse.h"
 #include "uapi/hse.h"
-
-enum HSE_FMT_TYPE {
-	HSE_FMT_TYPE_YUV,
-	HSE_FMT_TYPE_RGB,
-	HSE_FMT_TYPE_INDEX,
-};
-
-enum HSE_DEV_COLOR_FMT {
-	HSE_DEV_FMT_INDEX = 0,
-	HSE_DEV_FMT_RGB565 = 0,
-	HSE_DEV_FMT_RGB888 = 1,
-	HSE_DEV_FMT_ARGB888 = 2,
-	HSE_DEV_FMT_YUV422 = 3,
-	HSE_DEV_FMT_YUV420 = 4,
-};
-
-enum HSE_DEV_RGB_ORDER {
-	HSE_RGB_ORDER_RGB_ARGB,
-	HSE_RGB_ORDER_RBG_ARBG,
-	HSE_RGB_ORDER_BRG_ABRG,
-	HSE_RGB_ORDER_BGR_ABGR,
-	HSE_RGB_ORDER_GRB_AGRB,
-	HSE_RGB_ORDER_GBR_AGBR,
-	HSE_RGB_ORDER_RAGB,
-	HSE_RGB_ORDER_RABG,
-	HSE_RGB_ORDER_BARG,
-	HSE_RGB_ORDER_BAGR,
-	HSE_RGB_ORDER_GARB,
-	HSE_RGB_ORDER_GABR,
-	HSE_RGB_ORDER_RGAB,
-	HSE_RGB_ORDER_RBAG,
-	HSE_RGB_ORDER_BRAG,
-	HSE_RGB_ORDER_BGAR,
-	HSE_RGB_ORDER_GRAB,
-	HSE_RGB_ORDER_GBAR,
-	HSE_RGB_ORDER_RGBA,
-	HSE_RGB_ORDER_RBGA,
-	HSE_RGB_ORDER_BRGA,
-	HSE_RGB_ORDER_BGRA,
-	HSE_RGB_ORDER_GRBA,
-	HSE_RGB_ORDER_GBRA,
-};
-
-struct hse_dev_color_fmt {
-	enum HSE_COLOR_FMT fmt;
-	enum HSE_DEV_COLOR_FMT dev_fmt;
-	enum HSE_DEV_RGB_ORDER order;
-	enum HSE_FMT_TYPE type;
-};
 
 struct hse_dev_file_data {
 	struct hse_device *hse_dev;
@@ -75,21 +25,8 @@ struct hse_dev_buf {
 	struct rb_node rb_node;
 	struct dma_buf_attachment *attach;
 	struct sg_table *sgt;
-	u32 pfn;
+	u32 va;
 };
-
-static struct hse_dev_color_fmt fmt_map_tbl[] = {
-	{ HSE_FMT_YUV420SP, HSE_DEV_FMT_YUV420, 0, HSE_FMT_TYPE_YUV },
-	{ HSE_FMT_YUV422SP, HSE_DEV_FMT_YUV422, 0, HSE_FMT_TYPE_YUV },
-	{ HSE_FMT_ARGB, HSE_DEV_FMT_ARGB888, HSE_RGB_ORDER_RGB_ARGB,
-	  HSE_FMT_TYPE_RGB },
-	{ HSE_FMT_BGRA, HSE_DEV_FMT_ARGB888, HSE_RGB_ORDER_BGRA,
-	  HSE_FMT_TYPE_RGB },
-	{ HSE_FMT_RGB888, HSE_DEV_FMT_RGB888, HSE_RGB_ORDER_RGB_ARGB,
-	  HSE_FMT_TYPE_RGB },
-};
-
-#define fmt_map_tbl_size ARRAY_SIZE(fmt_map_tbl)
 
 static inline bool buf_is_contiguous(struct hse_dev_buf *buf)
 {
@@ -134,7 +71,7 @@ static int hse_dev_buf_va_is_less(struct rb_node *_a, struct rb_node *_b)
 	struct hse_dev_buf *a = rb_entry(_a, struct hse_dev_buf, rb_node);
 	struct hse_dev_buf *b = rb_entry(_b, struct hse_dev_buf, rb_node);
 
-	return a->pfn < b->pfn;
+	return a->va < b->va;
 }
 
 static void hse_dev_buf_rbtree_add(struct hse_dev_file_data *fdata, struct hse_dev_buf *buf)
@@ -160,7 +97,7 @@ static void hse_dev_buf_rbtree_add(struct hse_dev_file_data *fdata, struct hse_d
 	mutex_unlock(&fdata->buf_lock);
 }
 
-static struct hse_dev_buf *__hse_dev_buf_rbtree_find(struct hse_dev_file_data *fdata, u32 pfn)
+static struct hse_dev_buf *__hse_dev_buf_rbtree_find(struct hse_dev_file_data *fdata, u32 va)
 {
 	struct rb_root *tree = &fdata->buf_root;
 	struct rb_node *node = tree->rb_node;
@@ -168,9 +105,9 @@ static struct hse_dev_buf *__hse_dev_buf_rbtree_find(struct hse_dev_file_data *f
 	while (node) {
 		struct hse_dev_buf *buf = rb_entry(node, struct hse_dev_buf, rb_node);
 
-		if (buf->pfn == pfn)
+		if (buf->va == va)
 			return buf;
-		else if (buf->pfn < pfn)
+		else if (buf->va < va)
 			node = node->rb_right;
 		else
 			node = node->rb_left;
@@ -179,12 +116,12 @@ static struct hse_dev_buf *__hse_dev_buf_rbtree_find(struct hse_dev_file_data *f
 	return NULL;
 }
 
-static struct hse_dev_buf *hse_dev_buf_rbtree_find(struct hse_dev_file_data *fdata, u32 pfn)
+static struct hse_dev_buf *hse_dev_buf_rbtree_find(struct hse_dev_file_data *fdata, u32 va)
 {
 	struct hse_dev_buf *buf;
 
 	mutex_lock(&fdata->buf_lock);
-	buf = __hse_dev_buf_rbtree_find(fdata, pfn);
+	buf = __hse_dev_buf_rbtree_find(fdata, va);
 	mutex_unlock(&fdata->buf_lock);
 	return buf;
 }
@@ -231,7 +168,7 @@ static int hse_dev_buf_import_dmabuf(struct hse_device *hse_dev, struct hse_dev_
 
 	buf->attach = attach;
 	buf->sgt    = sgt;
-	buf->pfn     = buf_dma_addr(buf) >> PAGE_SHIFT;
+	buf->va     = buf_dma_addr(buf);
 	return 0;
 
 detach_dma_buf:
@@ -265,7 +202,7 @@ static void hse_dev_buf_release_and_free_all(struct hse_dev_file_data *fdata)
 		__hse_dev_buf_rbtree_remove(fdata, buf);
 		mutex_unlock(&fdata->buf_lock);
 
-		pr_warn("cq %pK: %s: %#x not released\n", fdata->cq, __func__, buf->pfn);
+		pr_warn("cq %pK: %s: %pad not released\n", fdata->cq, __func__, &buf->va);
 		hse_dev_buf_release(buf);
 		kfree(buf);
 		mutex_lock(&fdata->buf_lock);
@@ -314,11 +251,17 @@ static int hse_dev_submit(struct hse_engine *eng, struct hse_command_queue *cq)
 	else {
 		if (cq->status & ~HSE_STATUS_IRQ_OK)
 			ret = -EFAULT;
+
 		else if (cq->status & HSE_STATUS_IRQ_OK)
 			ret = 0;
 	}
 
 	return ret;
+}
+
+static bool hse_dev_flags_is_prep_cmd(u64 flags)
+{
+	return flags & HSE_FLAGS_PREP_CMD;
 }
 
 static struct hse_dev_buf *hse_dev_find_buf_and_check(struct hse_dev_file_data *fdata, u32 va, u32 f_flags, u32 offset, u32 size)
@@ -344,11 +287,6 @@ static struct hse_dev_buf *hse_dev_find_buf_and_check(struct hse_dev_file_data *
 		return ERR_PTR(ret);
 	}
 
-	if (!buf_is_contiguous(buf)) {
-		pr_debug("cq %pK: %s: va=0x%08x: not _contiguous\n", fdata->cq, __func__, va);
-		return ERR_PTR(-EINVAL);
-	}
-
 	return buf;
 }
 
@@ -371,16 +309,28 @@ static int hse_dev_ioctl_cmd_copy(struct hse_dev_file_data *fdata, unsigned long
 	if (IS_ERR(src))
 		return PTR_ERR(src);
 
-	hse_cq_reset(fdata->cq);
-	ret = hse_cq_prep_copy(fdata->hse_dev, fdata->cq,
-			       buf_dma_addr(dst) + user_arg.dst_offset,
-			       buf_dma_addr(src) + user_arg.src_offset,
-			       user_arg.size, user_arg.flags);
+	if (!hse_dev_flags_is_prep_cmd(user_arg.flags))
+		hse_cq_reset(fdata->cq);
+
+	if (buf_is_contiguous(dst) && buf_is_contiguous(src)) {
+		ret = hse_cq_prep_copy(fdata->hse_dev, fdata->cq,
+				       buf_dma_addr(dst) + user_arg.dst_offset,
+				       buf_dma_addr(src) + user_arg.src_offset,
+				       user_arg.size, user_arg.flags);
+	} else {
+		ret = hse_cq_prep_copy_sg(fdata->hse_dev, fdata->cq, dst->sgt->sgl, dst->sgt->nents,
+					  user_arg.dst_offset, src->sgt->sgl, src->sgt->nents,
+					  user_arg.src_offset, user_arg.size, user_arg.flags);
+	}
+
 	if (ret) {
 		pr_debug("cq %pK: %s: failed to prepare command: %d\n", fdata->cq, __func__, ret);
 		hse_cq_reset(fdata->cq);
 		return ret;
 	}
+
+	if (hse_dev_flags_is_prep_cmd(user_arg.flags))
+		return 0;
 
 	ret = hse_dev_submit(fdata->eng, fdata->cq);
 	hse_cq_reset(fdata->cq);
@@ -409,17 +359,28 @@ static int hse_dev_ioctl_cmd_picture_copy(struct hse_dev_file_data *fdata, unsig
 	if (IS_ERR(src))
 		return PTR_ERR(src);
 
-	hse_cq_reset(fdata->cq);
-	ret = hse_cq_prep_picture_copy(fdata->hse_dev, fdata->cq,
-				       buf_dma_addr(dst) + user_arg.dst_offset, user_arg.dst_pitch,
-				       buf_dma_addr(src) + user_arg.src_offset, user_arg.src_pitch,
-				       user_arg.width, user_arg.height, user_arg.flags);
+	if (!hse_dev_flags_is_prep_cmd(user_arg.flags))
+		hse_cq_reset(fdata->cq);
+
+	if (buf_is_contiguous(dst) && buf_is_contiguous(src))
+		ret = hse_cq_prep_picture_copy(fdata->hse_dev, fdata->cq,
+			buf_dma_addr(dst) + user_arg.dst_offset, user_arg.dst_pitch,
+			buf_dma_addr(src) + user_arg.src_offset, user_arg.src_pitch,
+			user_arg.width, user_arg.height, user_arg.flags);
+	else
+		ret = hse_cq_prep_picture_copy_sg(fdata->hse_dev, fdata->cq,
+			dst->sgt->sgl, dst->sgt->nents, user_arg.dst_offset, user_arg.dst_pitch,
+			src->sgt->sgl, src->sgt->nents, user_arg.src_offset, user_arg.src_pitch,
+			user_arg.width, user_arg.height, user_arg.flags);
 
 	if (ret) {
 		pr_debug("cq %pK: %s: failed to prepare command: %d\n", fdata->cq, __func__, ret);
 		hse_cq_reset(fdata->cq);
 		return ret;
 	}
+
+	if (hse_dev_flags_is_prep_cmd(user_arg.flags))
+		return 0;
 
 	ret = hse_dev_submit(fdata->eng, fdata->cq);
 	hse_cq_reset(fdata->cq);
@@ -432,7 +393,7 @@ static int hse_dev_ioctl_cmd_xor(struct hse_dev_file_data *fdata, unsigned long 
 	struct hse_dev_buf *dst, *src[HSE_XOR_NUM];
 	int ret;
 	int i;
-	dma_addr_t dst_addr, src_addr[HSE_XOR_NUM];
+	bool use_sg = false;
 
 	if (copy_from_user(&user_arg, (void *)arg, sizeof(user_arg)))
                 return -EFAULT;
@@ -444,7 +405,9 @@ static int hse_dev_ioctl_cmd_xor(struct hse_dev_file_data *fdata, unsigned long 
 					 user_arg.size);
 	if (IS_ERR(dst))
 		return PTR_ERR(dst);
-	dst_addr = buf_dma_addr(dst) + user_arg.dst_offset;
+
+	if (!buf_is_contiguous(dst))
+		use_sg = true;
 
 	for (i = 0; i < user_arg.src_num; i++) {
 		src[i] = hse_dev_find_buf_and_check(fdata, user_arg.src_va[i], O_RDONLY,
@@ -452,20 +415,38 @@ static int hse_dev_ioctl_cmd_xor(struct hse_dev_file_data *fdata, unsigned long 
 		if (IS_ERR(src[i]))
 			return PTR_ERR(src[i]);
 
-		src_addr[i] = buf_dma_addr(src[i]) + user_arg.src_offset[i];
+		if (!buf_is_contiguous(src[i]))
+			use_sg = true;
 	}
 
-	hse_cq_reset(fdata->cq);
-	ret = hse_cq_prep_xor(fdata->hse_dev, fdata->cq, dst_addr, src_addr, user_arg.src_num,
-			      user_arg.size, user_arg.flags);
+	if (use_sg) {
+		struct scatterlist *src_sg[HSE_XOR_NUM];
+		u32 src_nents[HSE_XOR_NUM];
 
-	if (ret) {
+		for (i = 0; i < user_arg.src_num; i++) {
+			src_sg[i] = src[i]->sgt->sgl;
+			src_nents[i] = src[i]->sgt->nents;
+		}
+
+		ret = hse_cq_prep_xor_sg(fdata->hse_dev, fdata->cq,
+				dst->sgt->sgl, dst->sgt->nents, user_arg.dst_offset,
+				src_sg, src_nents, user_arg.src_offset, user_arg.src_num,
+				user_arg.size, user_arg.flags);
+	} else {
+		dma_addr_t dst_addr, src_addr[HSE_XOR_NUM];
+
+		dst_addr = buf_dma_addr(dst) + user_arg.dst_offset;
+		for (i = 0; i < user_arg.src_num; i++)
+			src_addr[i] = buf_dma_addr(src[i]) + user_arg.src_offset[i];
+
+		ret = hse_cq_prep_xor(fdata->hse_dev, fdata->cq, dst_addr, src_addr, user_arg.src_num,
+				      user_arg.size, user_arg.flags);
+	}
+
+	if (ret)
 		pr_debug("cq %pK: %s: failed to prepare command: %d\n", fdata->cq, __func__, ret);
-		hse_cq_reset(fdata->cq);
-		return ret;
-	}
-
-	ret = hse_dev_submit(fdata->eng, fdata->cq);
+	else
+		ret = hse_dev_submit(fdata->eng, fdata->cq);
 	hse_cq_reset(fdata->cq);
 	return ret;
 }
@@ -487,24 +468,25 @@ static int hse_dev_ioctl_cmd_constant_fill(struct hse_dev_file_data *fdata, unsi
 	if (IS_ERR(dst))
 		return PTR_ERR(dst);
 
-	hse_cq_reset(fdata->cq);
-	ret = hse_cq_prep_constant_fill(fdata->hse_dev, fdata->cq,
-					buf_dma_addr(dst) + user_arg.dst_offset,
-					user_arg.val, user_arg.size, user_arg.flags);
-	if (ret) {
+	if (buf_is_contiguous(dst))
+		ret = hse_cq_prep_constant_fill(fdata->hse_dev, fdata->cq,
+						buf_dma_addr(dst) + user_arg.dst_offset,
+						user_arg.val, user_arg.size, user_arg.flags);
+	else
+		ret = hse_cq_prep_constant_fill_sg(fdata->hse_dev, fdata->cq,
+						   dst->sgt->sgl, dst->sgt->nents, user_arg.dst_offset,
+						   user_arg.val, user_arg.size, user_arg.flags);
+	if (ret)
 		pr_debug("cq %pK: %s: failed to prepare command: %d\n", fdata->cq, __func__, ret);
-		hse_cq_reset(fdata->cq);
-		return ret;
-	}
-
-	ret = hse_dev_submit(fdata->eng, fdata->cq);
+	else
+		ret = hse_dev_submit(fdata->eng, fdata->cq);
 	hse_cq_reset(fdata->cq);
 	return ret;
 }
 
-static int hse_dev_ioctl_cmd_yuy2_to_nv16(struct hse_dev_file_data *fdata, unsigned long arg)
+static int hse_dev_ioctl_cmd_yuv422i_to_yuv422sp(struct hse_dev_file_data *fdata, unsigned long arg)
 {
-	struct hse_cmd_yuy2_to_nv16 user_arg;
+	struct hse_cmd_yuv422i_to_yuv422sp user_arg;
 	struct hse_dev_buf *luma, *chroma, *src;
 	int ret;
 
@@ -529,314 +511,17 @@ static int hse_dev_ioctl_cmd_yuy2_to_nv16(struct hse_dev_file_data *fdata, unsig
 	if (IS_ERR(src))
 		return PTR_ERR(src);
 
-	hse_cq_reset(fdata->cq);
-	ret = hse_cq_prep_yuy2_to_nv16(fdata->hse_dev, fdata->cq,
-				       buf_dma_addr(luma) + user_arg.luma_offset,
-				       buf_dma_addr(chroma) + user_arg.chroma_offset,
-				       user_arg.dst_pitch, buf_dma_addr(src) + user_arg.src_offset,
-				       user_arg.src_pitch, user_arg.width, user_arg.height, user_arg.flags);
-	if (ret) {
-		pr_debug("cq %pK: %s: failed to prepare command: %d\n", fdata->cq, __func__, ret);
-		hse_cq_reset(fdata->cq);
-		return ret;
-	}
-
-	ret = hse_dev_submit(fdata->eng, fdata->cq);
-	hse_cq_reset(fdata->cq);
-	return ret;
-}
-
-static int hse_dev_get_color_fmt(struct hse_dev_color_fmt *fmt)
-{
-	int i = 0;
-	int ret = -EINVAL;
-
-	for (i = 0; i < fmt_map_tbl_size; i++) {
-		if (fmt_map_tbl[i].fmt == fmt->fmt) {
-			fmt->dev_fmt = fmt_map_tbl[i].dev_fmt;
-			fmt->order = fmt_map_tbl[i].order;
-			fmt->type = fmt_map_tbl[i].type;
-			ret = 0;
-			break;
-		}
-	}
-	return ret;
-}
-
-static int hse_dev_get_color_fmt_para(struct hse_dev_color_fmt *dst,
-				      struct hse_dev_color_fmt *src)
-{
-	int ret = 0;
-
-	ret = hse_dev_get_color_fmt(dst);
-	if (ret) {
-		pr_err("%s get dst color fmt fail", __func__);
-		goto exit;
-	}
-
-	ret = hse_dev_get_color_fmt(src);
-	if (ret) {
-		pr_err("%s get src color fmt fail", __func__);
-		goto exit;
-	}
-exit:
-	return ret;
-}
-
-static int hse_dev_ioctl_cmd_fmt_convert(struct hse_dev_file_data *fdata,
-					 unsigned long arg)
-{
-	struct hse_cmd_fmt_convert user_arg;
-	struct hse_dev_buf *dst_luma, *dst_chroma;
-	struct hse_dev_buf *src_luma, *src_chroma;
-	struct hse_dev_color_fmt dst = { 0 };
-	struct hse_dev_color_fmt src = { 0 };
-	u32 dst_luma_addr = 0, dst_chroma_addr = 0;
-	u32 src_luma_addr = 0, src_chroma_addr = 0;
-	int ret = 0;
-
-	if (copy_from_user(&user_arg, (void *)arg, sizeof(user_arg)))
-		return -EFAULT;
-
-	if (user_arg.src_pitch == 0 || user_arg.dst_pitch == 0 ||
-	    user_arg.width == 0)
-		return -EINVAL;
-
-	if (user_arg.src_luma_va == user_arg.dst_luma_va)
-		return -EINVAL;
-
-	dst.fmt = user_arg.dst_fmt;
-	src.fmt = user_arg.src_fmt;
-
-	ret = hse_dev_get_color_fmt_para(&dst, &src);
+	ret = hse_cq_prep_yuv422i_to_yuv422sp_sg(fdata->hse_dev, fdata->cq,
+		luma->sgt->sgl, luma->sgt->nents, user_arg.luma_offset,
+		chroma->sgt->sgl, chroma->sgt->nents, user_arg.chroma_offset, user_arg.dst_pitch,
+		src->sgt->sgl, src->sgt->nents, user_arg.src_offset, user_arg.src_pitch,
+		user_arg.width, user_arg.height, user_arg.flags);
 	if (ret)
-		return -EINVAL;
-
-	dst_luma = hse_dev_find_buf_and_check(
-		fdata, user_arg.dst_luma_va, O_WRONLY, user_arg.dst_luma_offset,
-		(u32)user_arg.dst_pitch * user_arg.height);
-	if (IS_ERR(dst_luma))
-		return PTR_ERR(dst_luma);
-
-	dst_luma_addr = buf_dma_addr(dst_luma) + user_arg.dst_luma_offset;
-
-	if (dst.type == HSE_FMT_TYPE_YUV) {
-		u32 size = 0;
-		if (dst.fmt == HSE_FMT_YUV420SP)
-			size = user_arg.dst_pitch * user_arg.height / 2;
-		else
-			size = user_arg.dst_pitch * user_arg.height;
-		dst_chroma = hse_dev_find_buf_and_check(
-			fdata, user_arg.dst_chroma_va, O_WRONLY,
-			user_arg.dst_chroma_offset, size);
-		if (IS_ERR(dst_chroma))
-			return PTR_ERR(dst_chroma);
-
-		dst_chroma_addr =
-			buf_dma_addr(dst_chroma) + user_arg.dst_chroma_offset;
-	} else {
-		dst_chroma_addr = 0;
-	}
-
-	src_luma = hse_dev_find_buf_and_check(
-		fdata, user_arg.src_luma_va, O_RDONLY, user_arg.src_luma_offset,
-		(u32)user_arg.src_pitch * user_arg.height);
-	if (IS_ERR(src_luma))
-		return PTR_ERR(src_luma);
-
-	src_luma_addr = buf_dma_addr(src_luma) + user_arg.src_luma_offset;
-
-	if (src.type == HSE_FMT_TYPE_YUV) {
-		u32 size = 0;
-		if (src.fmt == HSE_FMT_YUV420SP)
-			size = user_arg.src_pitch * user_arg.height / 2;
-		else
-			size = user_arg.src_pitch * user_arg.height;
-
-		src_chroma = hse_dev_find_buf_and_check(
-			fdata, user_arg.src_chroma_va, O_RDONLY,
-			user_arg.src_chroma_offset, size);
-
-		if (IS_ERR(src_chroma))
-			return PTR_ERR(src_chroma);
-
-		src_chroma_addr =
-			buf_dma_addr(src_chroma) + user_arg.src_chroma_offset;
-	} else {
-		src_chroma_addr = 0;
-	}
-
-	hse_cq_reset(fdata->cq);
-	if (src.type == HSE_FMT_TYPE_YUV && dst.type == HSE_FMT_TYPE_RGB)
-		hse_cq_prep_yuv2rgb_coeff(fdata->hse_dev, fdata->cq);
-	else if (src.type == HSE_FMT_TYPE_RGB && dst.type == HSE_FMT_TYPE_YUV)
-		hse_cq_prep_rgb2yuv_coeff(fdata->hse_dev, fdata->cq);
-
-	ret = hse_cq_prep_fmt_convert(
-		fdata->hse_dev, fdata->cq, dst.dev_fmt, user_arg.dst_pitch,
-		dst.order, dst_luma_addr, dst_chroma_addr, user_arg.alpha_out,
-		0, 0, src.dev_fmt, user_arg.src_pitch, src.order, src_luma_addr,
-		src_chroma_addr, user_arg.width, user_arg.height);
-	if (ret) {
-		pr_debug("cq %pK: %s: failed to prepare command: %d\n",
-			 fdata->cq, __func__, ret);
-		hse_cq_reset(fdata->cq);
-		return ret;
-	}
-
-	ret = hse_dev_submit(fdata->eng, fdata->cq);
-	hse_cq_reset(fdata->cq);
-
-	return ret;
-}
-
-static int hse_dev_ioctl_cmd_rotate(struct hse_dev_file_data *fdata, unsigned long arg)
-{
-	struct hse_cmd_rotate user_arg;
-	struct hse_dev_buf *dst, *src;
-	int ret;
-	u32 height;
-
-	if (copy_from_user(&user_arg, (void *)arg, sizeof(user_arg)))
-                return -EFAULT;
-
-	if (user_arg.src_pitch == 0 || user_arg.dst_pitch == 0 || user_arg.width == 0 ||
-	    (user_arg.flags & ~HSE_FLAGS_ROTATE_VALID_MASK) != 0)
-		return -EINVAL;
-
-	height = user_arg.mode == 1 ? user_arg.height : user_arg.width;
-	dst = hse_dev_find_buf_and_check(fdata, user_arg.dst_va, O_WRONLY, user_arg.dst_offset,
-					 (u32)user_arg.dst_pitch * height);
-	if (IS_ERR(dst))
-		return PTR_ERR(dst);
-
-	src = hse_dev_find_buf_and_check(fdata, user_arg.src_va, O_RDONLY, user_arg.src_offset,
-					 (u32)user_arg.src_pitch * user_arg.height);
-	if (IS_ERR(src))
-		return PTR_ERR(src);
-
-	if (dst->sgt->nents != 1 || src->sgt->nents != 1)
-		return -EINVAL;
-
-	hse_cq_reset(fdata->cq);
-	ret = hse_cq_prep_rotate(fdata->hse_dev, fdata->cq,
-				 buf_dma_addr(dst) + user_arg.dst_offset, user_arg.dst_pitch,
-				 buf_dma_addr(src) + user_arg.src_offset, user_arg.src_pitch,
-				 user_arg.width, user_arg.height, user_arg.mode,
-				 user_arg.color_format, user_arg.flags & HSE_FLAGS_ROTATE_10BIT);
-	if (ret) {
 		pr_debug("cq %pK: %s: failed to prepare command: %d\n", fdata->cq, __func__, ret);
-		hse_cq_reset(fdata->cq);
-		return ret;
-	}
-
-	ret = hse_dev_submit(fdata->eng, fdata->cq);
+	else
+		ret = hse_dev_submit(fdata->eng, fdata->cq);
 	hse_cq_reset(fdata->cq);
 	return ret;
-}
-
-static int hse_dev_ioctl_get_features(struct hse_dev_file_data *fdata, unsigned long arg)
-{
-	u64 features = 0;
-
-	if (hse_support_rotate_10bit(fdata->hse_dev))
-		features |= HSE_FEATURE_ROTATE_10BIT_SUPPORT;
-
-	if (copy_to_user((void *)arg, &features, sizeof(features))){
-		return -EFAULT;
-        }
-
-	return 0;
-}
-
-static int hse_dev_ioctl_cmd_stretch(struct hse_dev_file_data *fdata, unsigned long arg)
-{
-	struct hse_cmd_stretch user_arg;
-	struct hse_dev_buf *dst, *src;
-	int ret;
-
-	if (copy_from_user(&user_arg, (void *)arg, sizeof(user_arg)))
-		return -EFAULT;
-
-	if (user_arg.src_pitch == 0 || user_arg.dst_pitch == 0 ||
-		user_arg.src_width == 0 || user_arg.src_height == 0 ||
-		user_arg.dst_width == 0 || user_arg.dst_height == 0)
-		return -EINVAL;
-
-	if (user_arg.src_va == user_arg.dst_va)
-		return -EINVAL;
-
-	src = hse_dev_find_buf_and_check(fdata, user_arg.src_va, O_RDONLY, user_arg.src_offset,
-					 (u32)user_arg.src_pitch * user_arg.src_height);
-	if (IS_ERR(src))
-		return PTR_ERR(src);
-
-	dst = hse_dev_find_buf_and_check(fdata, user_arg.dst_va, O_WRONLY, user_arg.dst_offset,
-					  (u32)user_arg.dst_pitch * user_arg.dst_height);
-	if (IS_ERR(dst))
-		return PTR_ERR(dst);
-
-	if (dst->sgt->nents != 1 || src->sgt->nents != 1)
-		return -EINVAL;
-
-	hse_cq_reset(fdata->cq);
-	ret = hse_cq_prep_stretch(fdata->hse_dev, fdata->cq,
-                buf_dma_addr(dst) + user_arg.dst_offset, user_arg.dst_pitch,
-                buf_dma_addr(src) + user_arg.src_offset, user_arg.src_pitch,
-                user_arg.dst_width, user_arg.dst_height, user_arg.src_width, user_arg.src_height, user_arg.colorSel);
-
-	if (ret) {
-		pr_debug("cq %pK: %s: failed to prepare command: %d\n", fdata->cq, __func__, ret);
-		hse_cq_reset(fdata->cq);
-		return ret;
-	}
-
-	ret = hse_dev_submit(fdata->eng, fdata->cq);
-	hse_cq_reset(fdata->cq);
-
-	return ret;
-}
-
-static int hse_dev_ioctl_version(struct hse_dev_file_data *fdata, unsigned long arg)
-{
-	u32 v = HSE_VERSION_MAJOR << 16 | HSE_VERSION_MINOR;
-
-	if (copy_to_user((unsigned int __user *)arg, &v, sizeof(v)))
-		return -EFAULT;
-	return 0;
-}
-
-static int hse_dev_ioctl_cmd_prep_raw(struct hse_dev_file_data *fdata, unsigned long arg)
-{
-	struct hse_cmd cmd;
-
-	if (copy_from_user(&cmd, (unsigned int __user *)arg, sizeof(cmd)))
-		return -EFAULT;
-
-	if (cmd.size == 0 || cmd.size > ARRAY_SIZE(cmd.cmds))
-		return -EINVAL;
-
-	return hse_cq_add_data(fdata->cq, cmd.cmds, cmd.size);
-}
-
-static int hse_dev_ioctl_cmd_start(struct hse_dev_file_data *fdata, unsigned long arg)
-{
-	int ret;
-
-	ret = hse_dev_submit(fdata->eng, fdata->cq);
-	hse_cq_reset(fdata->cq);
-	return ret;
-}
-
-static int hse_dev_ioctl_set_engine(struct hse_dev_file_data *fdata, unsigned long arg)
-{
-	__u32 eng_id;
-
-	if (copy_from_user(&eng_id, (unsigned int __user *)arg, sizeof(__u32)))
-		return -EFAULT;
-
-	fdata->eng = hse_device_get_engine(fdata->hse_dev, eng_id);
-	return 0;
 }
 
 static int hse_dev_ioctl_import_dmabuf(struct hse_dev_file_data *fdata, unsigned long arg)
@@ -857,7 +542,7 @@ static int hse_dev_ioctl_import_dmabuf(struct hse_dev_file_data *fdata, unsigned
 		goto free_buf;
 
         hse_dev_buf_rbtree_add(fdata, buf);
-	user_arg.hse_va = buf->pfn;
+	user_arg.hse_va = buf->va;
 
 	if (copy_to_user((void *)arg, &user_arg, sizeof(user_arg))){
                 ret = -EFAULT;
@@ -940,84 +625,85 @@ static long hse_dev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 {
 	struct hse_dev_file_data *data = filp->private_data;
 	struct hse_command_queue *cq = data->cq;
-	struct device *dev = data->hse_dev->dev;
-	int ret = 0;
+	int ret;
 
-	ret = pm_runtime_get_sync(dev);
-	if (ret < 0) {
-		pr_err("cq %pK: %s: pm_runtime_get_sync() returns %d", cq, __func__, ret);
-		return ret;
+	/* reset cq for the commands */
+	switch (cmd) {
+	case HSE_IOCTL_CMD_CONSTANT_FILL:
+	case HSE_IOCTL_CMD_XOR:
+	case HSE_IOCTL_CMD_YUV422I_TO_YUV422SP:
+		hse_cq_reset(data->cq);
+		break;
+	default:
+		break;
 	}
 
 	switch (cmd) {
 	case HSE_IOCTL_VERSION:
-		ret = hse_dev_ioctl_version(data, arg);
-		break;
+	{
+		u32 v = HSE_VERSION_MAJOR << 16 | HSE_VERSION_MINOR;
 
-	case HSE_IOCTL_CMD_PREP_RAW:
-		ret = hse_dev_ioctl_cmd_prep_raw(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_START:
-		ret = hse_dev_ioctl_cmd_start(data, arg);
-		break;
-
-	case HSE_IOCTL_SET_ENGINE:
-		ret = hse_dev_ioctl_set_engine(data, arg);
-		break;
-
-	case HSE_IOCTL_GET_FEATURES:
-		ret = hse_dev_ioctl_get_features(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_COPY:
-		ret = hse_dev_ioctl_cmd_copy(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_CONSTANT_FILL:
-		ret = hse_dev_ioctl_cmd_constant_fill(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_XOR:
-		ret = hse_dev_ioctl_cmd_xor(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_PICTURE_COPY:
-		ret = hse_dev_ioctl_cmd_picture_copy(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_YUY2_TO_NV16:
-		ret = hse_dev_ioctl_cmd_yuy2_to_nv16(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_FMT_CONVERT:
-		ret = hse_dev_ioctl_cmd_fmt_convert(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_ROTATE:
-		ret = hse_dev_ioctl_cmd_rotate(data, arg);
-		break;
-
-	case HSE_IOCTL_CMD_STRETCH:
-		ret = hse_dev_ioctl_cmd_stretch(data, arg);
-		break;
-
-	case HSE_IOCTL_IMPORT_DMABUF:
-		ret = hse_dev_ioctl_import_dmabuf(data, arg);
-		break;
-
-	case HSE_IOCTL_RELEASE_MEM:
-		ret = hse_dev_ioctl_release_mem(data, arg);
-		break;
-
-	default:
-		ret = -ENOIOCTLCMD;
-		break;
+		if (copy_to_user((unsigned int __user *)arg, &v, sizeof(v)))
+			return -EFAULT;
+		return 0;
 	}
 
-	pm_runtime_mark_last_busy(dev);
-	pm_runtime_put_autosuspend(dev);
-	return ret;
+	case HSE_IOCTL_CMD_PREP_RAW:
+	{
+		struct hse_cmd cmd;
+
+		if (copy_from_user(&cmd, (unsigned int __user *)arg, sizeof(cmd)))
+			return -EFAULT;
+
+		if (cmd.size == 0 || cmd.size > ARRAY_SIZE(cmd.cmds))
+			return -EINVAL;
+
+		return hse_cq_add_data(cq, cmd.cmds, cmd.size);
+	}
+
+	case HSE_IOCTL_CMD_START:
+		ret = hse_dev_submit(data->eng, cq);
+		hse_cq_reset(data->cq);
+		return ret;
+
+	case HSE_IOCTL_SET_ENGINE:
+	{
+		__u32 eng_id;
+
+		if (copy_from_user(&eng_id, (unsigned int __user *)arg, sizeof(__u32)))
+			return -EFAULT;
+
+		data->eng = hse_device_get_engine(data->hse_dev, eng_id);
+		return 0;
+	}
+
+	case HSE_IOCTL_CMD_COPY:
+		return hse_dev_ioctl_cmd_copy(data, arg);
+
+	case HSE_IOCTL_CMD_CONSTANT_FILL:
+		return hse_dev_ioctl_cmd_constant_fill(data, arg);
+
+	case HSE_IOCTL_CMD_XOR:
+		return hse_dev_ioctl_cmd_xor(data, arg);
+
+	case HSE_IOCTL_CMD_PICTURE_COPY:
+		return hse_dev_ioctl_cmd_picture_copy(data, arg);
+
+	case HSE_IOCTL_CMD_YUV422I_TO_YUV422SP:
+		return hse_dev_ioctl_cmd_yuv422i_to_yuv422sp(data, arg);
+
+
+	case HSE_IOCTL_IMPORT_DMABUF:
+		return hse_dev_ioctl_import_dmabuf(data, arg);
+
+	case HSE_IOCTL_RELEASE_MEM:
+		return hse_dev_ioctl_release_mem(data, arg);
+
+	default:
+		return -ENOIOCTLCMD;
+	}
+
+	return 0;
 }
 
 static const struct file_operations hse_dev_fops = {

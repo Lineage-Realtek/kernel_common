@@ -3,7 +3,6 @@
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
 #include <linux/workqueue.h>
-#include <linux/pm_runtime.h>
 #include "dmaengine.h"
 
 #include "hse.h"
@@ -392,7 +391,6 @@ static int hse_dma_alloc_chan_resources(struct dma_chan *c)
 	int i;
 	unsigned long flags;
 	LIST_HEAD(head);
-	int ret;
 
 	chan->cq = hse_cq_alloc(hse_dev);
 	if (!chan->cq)
@@ -413,22 +411,11 @@ static int hse_dma_alloc_chan_resources(struct dma_chan *c)
 	list_splice_init(&head, &chan->desc_pool);
 	spin_unlock_irqrestore(&chan->pool_lock, flags);
 
-	ret = pm_runtime_get_sync(hse_dev->dev);
-	if (ret < 0) {
-		spin_lock_irqsave(&chan->pool_lock, flags);
-		list_splice_init(&chan->desc_pool, &head);
-		spin_unlock_irqrestore(&chan->pool_lock, flags);
-
-		__hse_dma_desc_free_list(&head);
-		hse_cq_free(chan->cq);
-	}
-
-	return ret;
+	return 0;
 }
 
 static void hse_dma_free_chan_resources(struct dma_chan *c)
 {
-	struct hse_device *hse_dev = chan_to_hse_device(c);
 	struct hse_dma_chan *chan = chan_to_hse_dma_chan(c);
 	unsigned long flags;
 	LIST_HEAD(head);
@@ -445,9 +432,6 @@ static void hse_dma_free_chan_resources(struct dma_chan *c)
 
 	__hse_dma_desc_free_list(&head);
 	hse_cq_free(chan->cq);
-
-	pm_runtime_mark_last_busy(hse_dev->dev);
-	pm_runtime_put_autosuspend(hse_dev->dev);
 }
 
 static void hse_dma_add_chan(struct dma_device *dma, struct hse_dma_chan *chan)

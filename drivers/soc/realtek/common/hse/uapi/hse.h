@@ -23,7 +23,7 @@
  * ioctl version
  */
 #define HSE_VERSION_MAJOR    3
-#define HSE_VERSION_MINOR    4
+#define HSE_VERSION_MINOR    1
 
 /**
  * HSE_IOCTL_VERSION - get ioctl version.
@@ -51,13 +51,6 @@
 
 
 #define HSE_IOCTL_SET_ENGINE             _IOW('H', 0x03, __u32)
-
-/**
- * HSE_IOCTL_GET_FEATURES - get hse features
- *
- * Returns hse features listed in HSE_FEATURE_*
- */
-#define HSE_IOCTL_GET_FEATURES           _IOR('H', 0x05, __u64)
 
 /**
  * HSE_IOCTL_IMPORT_DMABUF - import a dma buf and return HSE VA
@@ -92,22 +85,7 @@
 /**
  * HSE_IOCTL_CMD_YUY2I_TO_YUY2SP - run a YUY2 to NV16 command.
  */
-#define HSE_IOCTL_CMD_YUY2_TO_NV16     _IOW('H', 0x19, struct hse_cmd_yuy2_to_nv16)
-
-/**
- * HSE_IOCTL_CMD_ROTATE - run a rotate command
- */
-#define HSE_IOCTL_CMD_ROTATE           _IOW('H', 0x1a, struct hse_cmd_rotate)
-
-/**
- * HSE_IOCTL_CMD_FMT_CONVERT - run a yuv/rgb conversion command
- */
-#define HSE_IOCTL_CMD_FMT_CONVERT _IOW('H', 0x1b, struct hse_cmd_fmt_convert)
-
-/**
- * HSE_IOCTL_CMD_STRETCH - run a stretch command
- */
-#define HSE_IOCTL_CMD_STRETCH           _IOW('H', 0x1c, struct hse_cmd_stretch)
+#define HSE_IOCTL_CMD_YUV422I_TO_YUV422SP     _IOW('H', 0x19, struct hse_cmd_yuv422i_to_yuv422sp)
 
 /**
  * struct hse_cmd - raw commands to be added
@@ -124,17 +102,11 @@ struct hse_cmd {
  */
 #define HSE_FLAGS_COPY_SWAP_OPT_MASK   0x0000001fLL
 #define HSE_FLAGS_COPY_SWAP_EN         0x00000020LL
-#define HSE_FLAGS_ROTATE_10BIT         0x00000001LL
-#define HSE_FLAGS_PREP_CMD             0x100000000LL /* not supported */
+
+#define HSE_FLAGS_PREP_CMD             0x100000000LL
 
 #define HSE_FLAGS_COPY_VALID_MASK     \
-	(HSE_FLAGS_COPY_SWAP_OPT_MASK | HSE_FLAGS_COPY_SWAP_EN)
-#define HSE_FLAGS_ROTATE_VALID_MASK   (HSE_FLAGS_ROTATE_10BIT)
-
-/**
- * features
- */
-#define HSE_FEATURE_ROTATE_10BIT_SUPPORT   0x1LL
+	(HSE_FLAGS_COPY_SWAP_OPT_MASK | HSE_FLAGS_COPY_SWAP_EN | HSE_FLAGS_PREP_CMD)
 
 /**
  * Copy command swap options, valid with HSE_FLAGS_COPY_SWAP_EN set
@@ -247,7 +219,7 @@ struct hse_cmd_constant_fill {
 };
 
 /**
- * struct hse_cmd_yuy2_to_nv16 - data for a yuy2_to_nv16 command
+ * struct hse_cmd_yuv422i_to_yuv422sp - data for a yuv422i_to_yuv422sp command
  * @width:      [in] width of a picture (unit: pixels, 2 bytes per pixel)
  * @height:     [in] height of a picture
  * @dst_pitch:  [in] pitch to luma and chroma, must greater than or equal to width (unit: bytes)
@@ -261,7 +233,7 @@ struct hse_cmd_constant_fill {
  * @src_offset: [in] source buffer offset
  * @flags:      [in] additional control flags
  */
-struct hse_cmd_yuy2_to_nv16 {
+struct hse_cmd_yuv422i_to_yuv422sp {
 	__u16 width;
 	__u16 height;
 	__u16 dst_pitch;
@@ -272,96 +244,6 @@ struct hse_cmd_yuy2_to_nv16 {
 	__u16 src_pitch;
 	__u32 src_va;
 	__u32 src_offset;
-	__u64 flags;
-};
-
-enum HSE_COLOR_FMT {
-	/* YUV */
-	HSE_FMT_YUV420SP,
-	HSE_FMT_YUV422SP,
-	/* RGB with 32-bit/pixel */
-	HSE_FMT_ARGB = 2,
-	HSE_FMT_BGRA = 3,
-	/* RGB with 24-bit/pixel */
-	HSE_FMT_RGB888 = 26,
-};
-
-/**
- * struct hse_cmd_fmt_convert - data for a yuv/rgb conversion command
- * @width:      [in] width of a picture (unit: pixels)
- * @height:     [in] height of a picture
- * @dst_fmt:     [in] enum HSE_COLOR_FMT; destinate color format
- * @dst_luma_va:    [in] HSE VA of a imported destination buffer for luma
- * @dst_luma_offset:[in] destination buffer offset for  luma
- * @dst_chroma_va:    [in] HSE VA of a imported destination buffer for chroma (0 for RGB type)
- * @dst_chroma_offset:[in] destination buffer offset for chroma (0 for RGB type)
- * @dst_pitch:  [in] pitch to luma and chroma, must greater than or equal to width (unit: bytes, 2-byte alignment)
- * @alpha_out : [in] Alpha value when YUV to ARGB
- * @src_fmt:     [in] enum HSE_COLOR_FMT; source color format
- * @src_luma_va:    [in] HSE VA of a imported src buffer for luma
- * @src_luma_offset:[in] src buffer offset for luma
- * @src_chroma_va:    [in] HSE VA of a imported src buffer for chroma (0 for RGB type)
- * @src_chroma_offset:[in] src buffer offset for chroma (0 for RGB type)
- * @src_pitch:  [in] pitch to src, must greater than or equal to width (unit: bytes, 2-byte alignment)
- */
-struct hse_cmd_fmt_convert {
-	__u16 width;
-	__u16 height;
-	__u32 dst_fmt;
-	__u32 dst_luma_va;
-	__u32 dst_luma_offset;
-	__u32 dst_chroma_va;
-	__u32 dst_chroma_offset;
-	__u16 dst_pitch;
-	__u16 alpha_out;
-	__u32 src_fmt;
-	__u32 src_luma_va;
-	__u32 src_luma_offset;
-	__u32 src_chroma_va;
-	__u32 src_chroma_offset;
-	__u16 src_pitch;
-};
-
-#define HSE_ROTATE_MODE_90_DEG    0
-#define HSE_ROTATE_MODE_180_DEG   1
-#define HSE_ROTATE_MODE_270_DEG   2
-
-#define HSE_ROTATE_COLOR_FORMAT_Y      0
-#define HSE_ROTATE_COLOR_FORMAT_CbCr   1
-
-#define HSE_DELTA_PHASE_BASE   (16384)
-
-#define COLOR_SEL_Y         (0)
-#define COLOR_SEL_CBCR      (1)
-/* use Stretch to do SP -> P convert */
-#define COLOR_SEL_SP_P_CB   (2)
-#define COLOR_SEL_SP_P_CR   (3)
-
-/**
- * struct hse_cmd_rotate - data for a rotate command
- * @width:      [in] width of a picture (unit in pixel)
- * @height:     [in] height of a picture
- * @dst_pitch:  [in] pitch to dst (unit: bytes)
- * @dst_va:     [in] HSE VA of a imported destination buffer for dst
- * @dst_offset: [in] destination buffer offset for dst
- * @src_pitch:  [in] pitch to src (unit: bytes)
- * @src_va:     [in] HSE VA of a imported source buffer
- * @src_offset: [in] source buffer offset
- * @mode:       [in] degree to rotate (should be one of HSE_ROTATE_MODE_*)
- * @color_format: [in] color format (should be one of HSE_ROTATE_COLOR_FORMAT_*)
- * @flags:      [in] additional control flags, must in HSE_FLAGS_ROTATE_VALID_MASK
- */
-struct hse_cmd_rotate {
-	__u16 width;
-	__u16 height;
-	__u32 dst_pitch;
-	__u32 dst_va;
-	__u32 dst_offset;
-	__u32 src_pitch;
-	__u32 src_va;
-	__u32 src_offset;
-	__u32 mode;
-	__u32 color_format;
 	__u64 flags;
 };
 
@@ -381,34 +263,6 @@ struct hse_import_dmabuf {
  */
 struct hse_release_mem {
 	__u32 hse_va;
-};
-
-/**
- * struct hse_cmd_stretch - data for a stretch command
- * @dst_width:    [in] destination width of a picture (unit in pixel)
- * @dst_height:   [in] destination height of a picture
- * @dst_pitch:    [in] pitch to dst (unit: bytes)
- * @dst_va:       [in] hse va of a imported destination buffer for dst
- * @dst_offset:   [in] destination buffer offset for dst
- * @stc_width:    [in] source width of a picture (unit in pixel)
- * @src_height:   [in] source height of a picture
- * @src_pitch:    [in] pitch to src (unit: bytes)
- * @src_va:       [in] hse va of a imported source buffer
- * @src_offset:   [in] source buffer offset
- * @colorSel:     [in] Luma or Chroma data select
- */
-struct hse_cmd_stretch {
-	__u16 dst_width;
-	__u16 dst_height;
-	__u32 dst_pitch;
-	__u32 dst_va;
-	__u32 dst_offset;
-	__u16 src_width;
-	__u16 src_height;
-	__u32 src_pitch;
-	__u32 src_va;
-	__u32 src_offset;
-	__u16 colorSel;
 };
 
 #endif /* __UAPI_HSE_H */

@@ -7,6 +7,5 @@ rtk-hse-y += engine.o
 rtk-hse-y += cq.o
 rtk-hse-y += cmd.o
 rtk-hse-y += device.o
-rtk-hse-y += stretch_utils.o
 CFLAGS_dma.o += -I$(srctree)/drivers/dma
 rtk-hse-$(CONFIG_RTK_HSE_DMA) += dma.o

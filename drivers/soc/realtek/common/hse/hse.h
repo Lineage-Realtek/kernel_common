@@ -14,27 +14,11 @@
 #include <linux/wait.h>
 
 #define HSE_REG_BYPASS                  0x41c
-#define STRETCH_MAX_WIDTH_BYTES           4096
 
 enum {
 	HSE_STATUS_IRQ_OK = 0x1,
 	HSE_STATUS_IRQ_CMD_ERR = 0x2,
 };
-
-typedef enum _SEINFO_STRETCH_HTAP
-{
-	SEINFO_HSCALING_2TAP = 0,
-	SEINFO_HSCALING_4TAP = 1,
-	SEINFO_HSCALING_8TAP = 2
-
-} SEINFO_STRETCH_HTAP;
-
-typedef enum _SEINFO_STRETCH_VTAP
-{
-	SEINFO_VSCALING_2TAP = 0,
-	SEINFO_VSCALING_4TAP = 1
-
-} SEINFO_STRETCH_VTAP;
 
 struct hse_device;
 struct hse_command_queue;
@@ -139,7 +123,7 @@ static inline u32 hse_read(struct hse_device *hse_dev, u32 offset)
 	return v;
 }
 
-static inline struct hse_engine *hse_device_get_engine(struct hse_device *hse_dev, u32 id)
+static inline struct hse_engine *hse_device_get_engine(struct hse_device *hse_dev, int id)
 {
 	if (WARN_ON(id >= hse_dev->num_eng))
 		id = 0;
@@ -149,11 +133,9 @@ static inline struct hse_engine *hse_device_get_engine(struct hse_device *hse_de
 struct hse_quirks {
 	unsigned int bypass_en_disable : 1;
 	unsigned int xor_copy_v2 : 1;
-	unsigned int support_32gb_ram : 1;
-	unsigned int support_rotate_10bit : 1;
 
 	const struct hse_engine_desc *eng_desc;
-	u32 num_eng;
+	int num_eng;
 };
 
 static inline int hse_should_disable_bypass_en(struct hse_device *hse_dev)
@@ -167,58 +149,44 @@ static inline int hse_should_workaround_copy(struct hse_device *hse_dev)
 {
 	if (!hse_dev->quirks)
 		return 1;
+
 	return !hse_dev->quirks->xor_copy_v2;
 }
 
-static inline int hse_support_32gb_ram(struct hse_device *hse_dev)
-{
-	if (!hse_dev->quirks)
-		return 0;
-	return hse_dev->quirks->support_32gb_ram;
-}
-
-static inline int hse_support_rotate_10bit(struct hse_device *hse_dev)
-{
-	if (!hse_dev->quirks)
-		return 0;
-	return hse_dev->quirks->support_rotate_10bit;
-}
 
 /* cq prep function */
 int hse_cq_prep_copy(struct hse_device *hse_dev, struct hse_command_queue *cq,
 		     dma_addr_t dst, dma_addr_t src, u32 size, u64 flags);
+int hse_cq_prep_copy_sg(struct hse_device *hse_dev, struct hse_command_queue *cq,
+			struct scatterlist *dst_sg, u32 dst_nents, u32 dst_offset,
+			struct scatterlist *src_sg, u32 src_nents, u32 src_offset,
+			u32 size, u64 flags);
 int hse_cq_prep_picture_copy(struct hse_device *hse_dev, struct hse_command_queue *cq,
 			     dma_addr_t dst, u16 dst_pitch, dma_addr_t src, u16 src_pitch,
 			     u16 width, u16 height, u64 flags);
+int hse_cq_prep_picture_copy_sg(struct hse_device *hse_dev, struct hse_command_queue *cq,
+				struct scatterlist *dst_sg, u32 dst_nents, u32 dst_offset, u16 dst_pitch,
+				struct scatterlist *src_sg, u32 src_nents, u32 src_offset, u16 src_pitch,
+				u16 width, u16 height, u64 flags);
 int hse_cq_prep_constant_fill(struct hse_device *hse_dev, struct hse_command_queue *cq,
 			      dma_addr_t dst, u32 val, u32 size, u64 flags);
+int hse_cq_prep_constant_fill_sg(struct hse_device *hse_dev, struct hse_command_queue *cq,
+				 struct scatterlist *dst_sg, u32 dst_nents, u32 dst_offset,
+				 u32 val, u32 size, u64 flags);
 int hse_cq_prep_xor(struct hse_device *hse_dev, struct hse_command_queue *cq,
 		    dma_addr_t dst, dma_addr_t *src, u32 src_cnt, u32 size, u64 flags);
-int hse_cq_prep_yuy2_to_nv16(struct hse_device *hse_dev, struct hse_command_queue *cq,
-			     dma_addr_t luma, dma_addr_t chroma, u16 dst_pitch,
-			     dma_addr_t src, u16 src_pitch, u16 width, u16 height, u64 flags);
-int hse_cq_prep_rotate(struct hse_device *hse_dev, struct hse_command_queue *cq,
-		       dma_addr_t dst, u32 dst_pitch, dma_addr_t src, u32 src_pitch,
-		       u32 width, u32 height, u32 mode, u32 color_format, u32 format_10bit);
-int hse_cq_prep_yuv2rgb_coeff(struct hse_device *hse_dev,
-			      struct hse_command_queue *cq);
-int hse_cq_prep_rgb2yuv_coeff(struct hse_device *hse_dev,
-			      struct hse_command_queue *cq);
-int hse_cq_prep_fmt_convert(struct hse_device *hse_dev,
-			    struct hse_command_queue *cq, u8 dst_fmt,
-			    u16 dst_pitch, u16 dst_rgb_order, dma_addr_t dst_luma_addr,
-			    dma_addr_t dst_chroma_addr, u16 alpha_out, u8 yuv_down_h,
-			    u8 yuv_down_v, u8 src_fmt, u16 src_pitch,
-			    u16 src_rgb_order, dma_addr_t src_luma_addr,
-			    dma_addr_t src_chroma_addr, u16 width, u16 height);
-int hse_cq_prep_stretch(struct hse_device *hse_dev, struct hse_command_queue *cq,
-                dma_addr_t dst, u32 dst_pitch, dma_addr_t src, u32 src_pitch,
-                u16 dst_width, u16 dst_height, u16 src_width, u16 src_height, u16 colorSel);
+int hse_cq_prep_xor_sg(struct hse_device *hse_dev, struct hse_command_queue *cq,
+		       struct scatterlist *dst_sg, u32 dst_nents, u32 dst_offset,
+		       struct scatterlist **src_sg, u32 *src_nents, u32 *src_offset,
+		       u32 src_cnt, u32 size, u64 flags);
+int hse_cq_prep_yuv422i_to_yuv422sp_sg(struct hse_device *hse_dev, struct hse_command_queue *cq,
+				struct scatterlist *luma_sg, u32 luma_nents, u32 luma_offset,
+				struct scatterlist *chroma_sg, u32 chroma_nents, u32 chroma_offset,
+				u16 dst_pitch, struct scatterlist *src_sg, u32 src_nents, u32 src_offset,
+				u16 src_pitch, u16 width, u16 height, u64 flags);
+
 int hse_setup_miscdevice(struct hse_device *hse_dev);
 void hse_teardown_miscdevice(struct hse_device *hse_dev);
-
-void SetVideoScalingCoeffs(u16 *coeff, u32 delta_phase, u32 init_phase, u32 taps, u32 swap);
-void SetCoeffsCbCrMode(u16 *coeff, u32 cbMode, u32 taps, u32 init_phase);
 
 #ifdef CONFIG_RTK_HSE_DMA
 int hse_setup_dmaengine(struct hse_device *hse_dev);
