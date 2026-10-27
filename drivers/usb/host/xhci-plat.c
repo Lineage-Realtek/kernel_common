@@ -311,6 +311,11 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	/* imod_interval is the interrupt moderation value in nanoseconds. */
 	xhci->imod_interval = 40000;
 
+#if 1 /* USB_PATCH_BY_RTK */
+	xhci->usb3_trb_cache_size = DEFAULT_USB3_TRB_CACHE_SZIE;
+	xhci->usb2_trb_cache_size = DEFAULT_USB2_TRB_CACHE_SZIE;
+#endif /* USB_PATCH_BY_RTK */
+
 	/* Iterate over all parent nodes for finding quirks */
 	for (tmpdev = &pdev->dev; tmpdev; tmpdev = tmpdev->parent) {
 
@@ -325,6 +330,18 @@ static int xhci_plat_probe(struct platform_device *pdev)
 
 		device_property_read_u32(tmpdev, "imod-interval-ns",
 					 &xhci->imod_interval);
+
+#if 1 /* USB_PATCH_BY_RTK */
+		if (!device_property_read_u32(tmpdev, "usb3-trb-cache-size",
+					 &xhci->usb3_trb_cache_size))
+			dev_info(&pdev->dev, "set usb3_trb_cache_size=%d\n",
+				    xhci->usb3_trb_cache_size);
+
+		if (!device_property_read_u32(tmpdev, "usb2-trb-cache-size",
+					 &xhci->usb2_trb_cache_size))
+			dev_info(&pdev->dev, "set usb2_trb_cache_size=%d\n",
+				    xhci->usb2_trb_cache_size);
+#endif /* USB_PATCH_BY_RTK */
 	}
 
 	hcd->usb_phy = devm_usb_get_phy_by_phandle(sysdev, "usb-phy", 0);

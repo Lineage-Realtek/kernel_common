@@ -220,6 +220,9 @@ struct ehci_hcd {			/* one per controller */
 	unsigned		need_oc_pp_cycle:1; /* MPC834X port power */
 	unsigned		imx28_write_fix:1; /* For Freescale i.MX28 */
 	unsigned		spurious_oc:1;
+#if 1 /* USB_PATCH_BY_RTK */
+	unsigned		fixed_async_list_addr_bug:1;
+#endif /* USB_PATCH_BY_RTK */
 	unsigned		is_aspeed:1;
 
 	/* required for usb32 quirk */

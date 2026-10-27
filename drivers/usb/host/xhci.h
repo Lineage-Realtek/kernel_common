@@ -1565,6 +1565,17 @@ enum xhci_cancelled_td_status {
 	TD_CLEARED,
 };
 
+#if 1 /* USB_PATCH_BY_RTK */
+struct xhci_cache_buf {
+	dma_addr_t		dma;
+	void			*buf;
+	unsigned int		offs;
+	unsigned int		len;
+
+	struct list_head list;
+};
+#endif /* USB_PATCH_BY_RTK */
+
 struct xhci_td {
 	struct list_head	td_list;
 	struct list_head	cancelled_td_list;
@@ -1579,6 +1590,10 @@ struct xhci_td {
 	/* actual_length of the URB has already been set */
 	bool			urb_length_set;
 	unsigned int		num_trbs;
+
+#if 1 /* USB_PATCH_BY_RTK */
+	struct list_head cache_buf_list;
+#endif /* USB_PATCH_BY_RTK */
 };
 
 /* xHCI command default timeout value */
@@ -1941,6 +1956,13 @@ struct xhci_hcd {
 	u16			test_mode;
 /* Compliance Mode Timer Triggered every 2 seconds */
 #define COMP_MODE_RCVRY_MSECS 2000
+
+#if 1 /* USB_PATCH_BY_RTK */
+	int usb3_trb_cache_size;
+	int usb2_trb_cache_size;
+#define DEFAULT_USB3_TRB_CACHE_SZIE 16
+#define DEFAULT_USB2_TRB_CACHE_SZIE 10
+#endif /* USB_PATCH_BY_RTK */
 
 	struct dentry		*debugfs_root;
 	struct dentry		*debugfs_slots;

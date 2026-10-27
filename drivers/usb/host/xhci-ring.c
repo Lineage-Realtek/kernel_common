@@ -771,6 +771,68 @@ static void xhci_giveback_urb_in_irq(struct xhci_hcd *xhci,
 	usb_hcd_giveback_urb(hcd, urb, status);
 }
 
+#if 1 /* USB_PATCH_BY_RTK */
+static void xhci_unmap_td_cache_buf(struct xhci_hcd *xhci,
+		struct xhci_ring *ring, struct xhci_td *td)
+{
+	struct device *dev = xhci_to_hcd(xhci)->self.controller;
+	struct urb *urb = td->urb;
+	size_t len;
+	struct xhci_cache_buf *cache_buf, *tmp;
+
+	if (usb_urb_dir_out(urb)) {
+		list_for_each_entry_safe(cache_buf, tmp, &td->cache_buf_list,
+			    list) {
+			if (!cache_buf)
+				continue;
+
+			list_del_init(&cache_buf->list);
+
+			if (!cache_buf->buf) {
+				xhci_err(xhci, "%s cache_buf buf is NULL\n",
+					    __func__);
+				kfree(cache_buf);
+				continue;
+			}
+
+			dma_unmap_single(dev, cache_buf->dma, cache_buf->len,
+				 DMA_TO_DEVICE);
+
+			kfree(cache_buf->buf);
+			kfree(cache_buf);
+		}
+		return;
+	}
+
+	list_for_each_entry_safe(cache_buf, tmp, &td->cache_buf_list,
+		    list) {
+		if (!cache_buf)
+			continue;
+
+		list_del_init(&cache_buf->list);
+
+		if (!cache_buf->buf) {
+			xhci_err(xhci, "%s cache_buf buf is NULL\n", __func__);
+			kfree(cache_buf);
+			continue;
+		}
+
+		dma_unmap_single(dev, cache_buf->dma, cache_buf->len,
+			 DMA_FROM_DEVICE);
+		/* for in tranfers we need to copy the data from cache to sg */
+		len = sg_pcopy_from_buffer(urb->sg, urb->num_sgs,
+			     cache_buf->buf,
+			     cache_buf->len, cache_buf->offs);
+		if (len != cache_buf->len)
+			xhci_warn(xhci, "WARN Wrong cache buffer read length: %zu != %d\n",
+				    len, cache_buf->len);
+
+		kfree(cache_buf->buf);
+		kfree(cache_buf);
+	}
+}
+#endif /* USB_PATCH_BY_RTK */
+
 static void xhci_unmap_td_bounce_buffer(struct xhci_hcd *xhci,
 		struct xhci_ring *ring, struct xhci_td *td)
 {
@@ -778,6 +840,10 @@ static void xhci_unmap_td_bounce_buffer(struct xhci_hcd *xhci,
 	struct xhci_segment *seg = td->bounce_seg;
 	struct urb *urb = td->urb;
 	size_t len;
+
+#if 1 /* USB_PATCH_BY_RTK */
+	xhci_unmap_td_cache_buf(xhci, ring, td);
+#endif /* USB_PATCH_BY_RTK */
 
 	if (!ring || !seg || !urb)
 		return;
@@ -3336,6 +3402,9 @@ static int prepare_transfer(struct xhci_hcd *xhci,
 
 	INIT_LIST_HEAD(&td->td_list);
 	INIT_LIST_HEAD(&td->cancelled_td_list);
+#if 1 /* USB_PATCH_BY_RTK */
+	INIT_LIST_HEAD(&td->cache_buf_list);
+#endif /* USB_PATCH_BY_RTK */
 
 	if (td_index == 0) {
 		ret = usb_hcd_link_urb_to_ep(bus_to_hcd(urb->dev->bus), urb);
@@ -3519,6 +3588,63 @@ static u32 xhci_td_remainder(struct xhci_hcd *xhci, int transferred,
 	return (total_packet_count - ((transferred + trb_buff_len) / maxp));
 }
 
+#if 1 /* USB_PATCH_BY_RTK */
+static u64 xhci_align_cache_buf(struct xhci_hcd *xhci,
+	    struct urb *urb, u32 enqd_len, u32 hw_limit_buf_len,
+	    u32 *trb_buff_len, struct xhci_td *td)
+{
+	struct device *dev = xhci_to_hcd(xhci)->self.controller;
+	struct xhci_cache_buf *cache_buf;
+	unsigned int max_pkt;
+	u32 new_buff_len;
+	size_t len;
+
+	max_pkt = usb_endpoint_maxp(&urb->ep->desc);
+
+	cache_buf = kzalloc(sizeof(struct xhci_cache_buf), GFP_KERNEL);
+	if (!cache_buf)
+		return -ENOMEM;
+	list_add(&cache_buf->list, &td->cache_buf_list);
+
+	cache_buf->buf = kzalloc(max_pkt, GFP_DMA | GFP_ATOMIC);
+	if (!cache_buf->buf)
+		return -ENOMEM;
+
+	new_buff_len = max_pkt - (enqd_len % max_pkt);
+
+	if (new_buff_len > (urb->transfer_buffer_length - enqd_len))
+		new_buff_len = (urb->transfer_buffer_length - enqd_len);
+
+	/* create a max max_pkt sized cache buffer pointed to by last trb */
+	if (usb_urb_dir_out(urb)) {
+		len = sg_pcopy_to_buffer(urb->sg, urb->num_sgs,
+				   cache_buf->buf, new_buff_len, enqd_len);
+		if (len != new_buff_len)
+			xhci_warn(xhci,
+				"WARN Wrong cache buffer write length: %zu != %d\n",
+				len, new_buff_len);
+		cache_buf->dma = dma_map_single(dev, cache_buf->buf,
+						 max_pkt, DMA_TO_DEVICE);
+	} else {
+		cache_buf->dma = dma_map_single(dev, cache_buf->buf,
+						 max_pkt, DMA_FROM_DEVICE);
+	}
+
+	if (dma_mapping_error(dev, cache_buf->dma)) {
+		/* try without aligning. Some host controllers survive */
+		xhci_warn(xhci, "Failed mapping cache buffer, not aligning\n");
+		return 0;
+	}
+	*trb_buff_len = new_buff_len;
+
+	cache_buf->len = new_buff_len;
+	cache_buf->offs = enqd_len;
+
+	xhci_dbg(xhci, "cache buf align, new buff len %d\n", *trb_buff_len);
+
+	return cache_buf->dma;
+}
+#endif /* USB_PATCH_BY_RTK */
 
 static int xhci_align_td(struct xhci_hcd *xhci, struct urb *urb, u32 enqd_len,
 			 u32 *trb_buff_len, struct xhci_segment *seg)
@@ -3607,6 +3733,24 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 	int sent_len, ret;
 	u32 field, length_field, remainder;
 	u64 addr, send_addr;
+#if 1 /* USB_PATCH_BY_RTK */
+	int max_hw_limit_num_trbs, hw_limit_num_trbs = 0;
+	int max_hw_limit_buf_len, hw_limit_buf_len = 0;
+
+	max_hw_limit_buf_len = usb_endpoint_maxp(&urb->ep->desc);
+	if (urb->dev->speed >= USB_SPEED_SUPER)
+		max_hw_limit_num_trbs = xhci->usb3_trb_cache_size;
+	else
+		max_hw_limit_num_trbs = xhci->usb2_trb_cache_size;
+
+	/* If max_hw_limit_num_trbs is zero, disable max_hw_limit_num_trbs */
+	if (!max_hw_limit_num_trbs)
+		max_hw_limit_num_trbs = INT_MAX;
+
+	/* A safe limit is trb cache size minus 3 */
+	max_hw_limit_num_trbs -= 3;
+
+#endif /* USB_PATCH_BY_RTK */
 
 	ring = xhci_urb_to_transfer_ring(xhci, urb);
 	if (!ring)
@@ -3673,6 +3817,28 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 		 */
 		if (enqd_len + trb_buff_len < full_len) {
 			field |= TRB_CHAIN;
+
+#if 1 /* USB_PATCH_BY_RTK */
+			hw_limit_num_trbs++;
+			hw_limit_buf_len += trb_buff_len;
+
+			if (hw_limit_buf_len >= max_hw_limit_buf_len) {
+				hw_limit_buf_len = (enqd_len + trb_buff_len) %
+					    max_hw_limit_buf_len;
+				hw_limit_num_trbs = 0;
+			} else if (hw_limit_num_trbs >= max_hw_limit_num_trbs) {
+				send_addr = xhci_align_cache_buf(xhci, urb,
+					    enqd_len, hw_limit_buf_len,
+					    &trb_buff_len, td);
+				if (send_addr <= 0)
+					return send_addr;
+
+				hw_limit_buf_len = (enqd_len + trb_buff_len) %
+					    max_hw_limit_buf_len;
+				hw_limit_num_trbs = 0;
+			}
+#endif /* USB_PATCH_BY_RTK */
+
 			if (trb_is_link(ring->enqueue + 1)) {
 				if (xhci_align_td(xhci, urb, enqd_len,
 						  &trb_buff_len,
@@ -3680,6 +3846,12 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 					send_addr = ring->enq_seg->bounce_dma;
 					/* assuming TD won't span 2 segs */
 					td->bounce_seg = ring->enq_seg;
+#if 1 /* USB_PATCH_BY_RTK */
+					hw_limit_buf_len = (enqd_len +
+						    trb_buff_len) %
+						    max_hw_limit_buf_len;
+					hw_limit_num_trbs = 0;
+#endif /* USB_PATCH_BY_RTK */
 				}
 			}
 		}
