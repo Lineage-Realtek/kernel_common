@@ -34,7 +34,7 @@
 
 static char prop_name[40];
 static int prop_name_inited;
-static int opp_table;
+static struct opp_table *opp_table;
 
 static int prop_from_dss(char *name, size_t size)
 {
@@ -145,13 +145,13 @@ static void cpu_volt_sel_set_prop_name(void)
 	}
 
 	opp_table = dev_pm_opp_set_prop_name(dev, prop_name);
-	if (opp_table < 0) {
-		ret = opp_table;
+	if (IS_ERR(opp_table)) {
+		ret = PTR_ERR(opp_table);
 		if (ret == -EPROBE_DEFER)
 			pr_debug("dev_pm_opp_set_prop_name() not ready, retry\n");
 		else
 			pr_warn("dev_pm_opp_set_prop_name() returns %d\n", ret);
-		opp_table = 0;
+		opp_table = NULL;
 	}
 
 	if (opp_table)
@@ -166,7 +166,7 @@ static void cpu_volt_sel_put_opp_table(void)
 		return;
 
 	dev_pm_opp_put_prop_name(opp_table);
-	opp_table = 0;
+	opp_table = NULL;
 }
 
 static int cpu_volt_sel_cb(struct notifier_block *nb, unsigned long event,
@@ -204,13 +204,8 @@ static __init int cpu_volt_sel_init(void)
 	int ret;
 
 	ret = cpu_volt_set_init_prop_name();
-	if (ret) {
-		if (ret == -ENOTSUPP) {
-			pr_info("no prop_name\n");
-			return 0;
-		}
+	if (ret)
 		return ret;
-	}
 
 	return bus_register_notifier(&platform_bus_type, &cpu_volt_sel_nb);
 }
