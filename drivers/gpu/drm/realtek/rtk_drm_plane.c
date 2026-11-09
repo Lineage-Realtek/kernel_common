@@ -233,11 +233,12 @@ static int write_cmd_to_ringbuffer(struct rtk_drm_plane *rtk_plane, void *cmd)
 {
 	void *base_iomap = rtk_plane->ringbase;
 	struct tag_ringbuffer_header *rbHeader = rtk_plane->ringheader;
+	unsigned int type = rtk_plane->rpc_info->vo_in_hifi;
 	unsigned int size = ((struct inband_cmd_pkg_header *)cmd)->size;
-	unsigned int read = ipcReadULONG((u8 *)&rbHeader->readPtr[0]);
-	unsigned int write = ipcReadULONG((u8 *)&(rbHeader->writePtr));
-	unsigned int base = ipcReadULONG((u8 *)&(rbHeader->beginAddr));
-	unsigned int b_size = ipcReadULONG((u8 *)&(rbHeader->size));
+	unsigned int read = ipcReadULONG((u8 *)&rbHeader->readPtr[0], type);
+	unsigned int write = ipcReadULONG((u8 *)&(rbHeader->writePtr), type);
+	unsigned int base = ipcReadULONG((u8 *)&(rbHeader->beginAddr), type);
+	unsigned int b_size = ipcReadULONG((u8 *)&(rbHeader->size), type);
 	unsigned int limit = base + b_size;
 
 	if (read + (read > write ? 0 : limit - base) - write > size) {
@@ -245,15 +246,15 @@ static int write_cmd_to_ringbuffer(struct rtk_drm_plane *rtk_plane, void *cmd)
 		void *write_io = (void *)((unsigned long)base_iomap + offset);
 
 		if (write + size <= limit) {
-			ipcCopyMemory((void *)write_io, cmd, size);
+			ipcCopyMemory((void *)write_io, cmd, size, type);
 		} else {
-			ipcCopyMemory((void *)write_io, cmd, limit - write);
-			ipcCopyMemory((void *)base_iomap, (void *)((unsigned long)cmd + limit - write), size - (limit - write));
+			ipcCopyMemory((void *)write_io, cmd, limit - write, type);
+			ipcCopyMemory((void *)base_iomap, (void *)((unsigned long)cmd + limit - write), size - (limit - write), type);
 		}
 		write += size;
 		write = write < limit ? write : write - (limit - base);
 
-		rbHeader->writePtr = ipcReadULONG((u8 *)&write);
+		rbHeader->writePtr = ipcReadULONG((u8 *)&write, type);
 	} else {
 		DRM_ERROR("errQ r:%x w:%x size:%u base:%u limit:%u\n",
 			  read, write, size, base, limit);

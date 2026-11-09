@@ -19,6 +19,11 @@
 #endif
 #include <linux/io.h>
 #include <linux/dma-map-ops.h>
+#include <linux/of_device.h>
+#include <linux/mfd/syscon.h>
+#include <linux/hwspinlock.h>
+#include <linux/regmap.h>
+#include <drm/drm_print.h>
 //#include <asm/io.h>
 #include "rtk_drm_rpc.h"
 
@@ -62,19 +67,60 @@ bool is_audio_heap(unsigned int dumb_flags)
 	return false;
 }
 
-unsigned int ipcReadULONG(u8 *src)
+unsigned int ipcReadULONG(u8 *src, unsigned int type)
 {
-	return __be32_to_cpu(readl(src));
+	if (type)
+		return readl(src);
+	else
+		return __be32_to_cpu(readl(src));
 }
 
-void ipcCopyMemory(void *p_des, void *p_src, unsigned long len)
+void ipcCopyMemory(void *p_des, void *p_src, unsigned long len, unsigned int type)
 {
 	unsigned char *des = (unsigned char *)p_des;
 	unsigned char *src = (unsigned char *)p_src;
 	int i;
 
-	for (i = 0; i < len; i += 4)
-		writel(__cpu_to_be32(readl(&src[i])), &des[i]);
+	for (i = 0; i < len; i += 4) {
+		if (type)
+			writel(readl(&src[i]), &des[i]);
+		else
+			writel(__cpu_to_be32(readl(&src[i])), &des[i]);
+	}
+}
+
+void rpc_send_interrupt(struct rtk_rpc_info *rpc_info)
+{
+	unsigned long flags;
+	ktime_t start;
+	s64 send_intr_time_ms;
+
+	start = ktime_get();
+
+	/* NOTE: the device reads vo_sync_flag before checking it for NULL. */
+	DRM_DEBUG_DRIVER("%s\n",
+		DC_HAS_BIT(rpc_info->vo_sync_flag, VO_DC_SET_NOTIFY) ?
+		"has interrupt bit" : "no interrupt bit");
+
+	if (rpc_info->vo_sync_flag != NULL &&
+	    DC_HAS_BIT(rpc_info->vo_sync_flag, VO_DC_SET_NOTIFY)) {
+
+		if (rpc_info->hwlock)
+			hwspin_lock_timeout_irqsave(rpc_info->hwlock, UINT_MAX, &flags);
+
+		DC_SET_BIT(rpc_info->vo_sync_flag, VO_DC_FEEDBACK_NOTIFY);
+
+		if (rpc_info->hwlock)
+			hwspin_unlock_irqrestore(rpc_info->hwlock, &flags);
+
+		regmap_write(rpc_info->acpu_int_base, 0xa80, (ACPU_INT_SA | ACPU_INT_WRITE));
+
+		DRM_DEBUG_DRIVER("send interrupt done\n");
+
+		send_intr_time_ms = ktime_ms_delta(ktime_get(), start);
+		if (send_intr_time_ms > 2)
+			DRM_DEBUG_DRIVER("send_intr_time_ms (%lld)\n", send_intr_time_ms);
+	}
 }
 
 #if IS_ENABLED(CONFIG_KERN_RPC_HANDLE_COMMAND)
@@ -88,7 +134,7 @@ static int rpc_get_command_thread(void *data)
 	uint32_t *tmp;
 	int size;
 
-	while(!kthread_should_stop()) {
+	while (!kthread_should_stop()) {
 		krpc_wait_event(rpc_info->pid);
 
 		if (rpc_kern_read(RPC_AUDIO, readbuf, sizeof(RPC_STRUCT)) != sizeof(RPC_STRUCT)) {
@@ -188,7 +234,7 @@ static int krpc_notify_cb(struct rtk_krpc_ept_info *krpc_ept_info, char *buf)
 
 	if (rpc->programID == REPLYID) {
 		tmp = (uint32_t *)(buf + sizeof(struct rpc_struct));
-		*(krpc_ept_info->retval) =*(tmp + 1);
+		*(krpc_ept_info->retval) = *(tmp + 1);
 
 		complete(&krpc_ept_info->ack);
 	} else {
@@ -264,17 +310,20 @@ int drm_send_rpc(struct device *dev, struct rtk_krpc_ept_info *krpc_ept_info, ch
 
 static int send_rpc(struct rtk_rpc_info *rpc_info, int opt, uint32_t command, uint32_t param1, uint32_t param2, uint32_t *retval)
 {
+	/* NOTE: the device returns success when the endpoint is missing or
+	 * prepare_rpc_data() fails. Preserve that behavior.
+	 */
 	int ret = 0;
 	char *buf;
 	int len;
 
-	if (opt == RPC_AUDIO && !IS_ERR(rpc_info->acpu_ept_info)) {
+	if (opt == RPC_AUDIO && !IS_ERR_OR_NULL(rpc_info->acpu_ept_info)) {
 		buf = prepare_rpc_data(rpc_info->acpu_ept_info, command, param1, param2, &len);
 		if (!IS_ERR(buf)) {
 			ret = drm_send_rpc(rpc_info->dev, rpc_info->acpu_ept_info, buf, len, retval);
 			kfree(buf);
 		}
-	} else if (opt == RPC_HIFI && !IS_ERR(rpc_info->hifi_ept_info)) {
+	} else if (opt == RPC_HIFI && !IS_ERR_OR_NULL(rpc_info->hifi_ept_info)) {
 		buf = prepare_rpc_data(rpc_info->hifi_ept_info, command, param1, param2, &len);
 		if (!IS_ERR(buf)) {
 			ret = drm_send_rpc(rpc_info->dev, rpc_info->hifi_ept_info, buf, len, retval);
@@ -288,23 +337,39 @@ static int send_rpc(struct rtk_rpc_info *rpc_info, int opt, uint32_t command, ui
 int rpc_destroy_video_agent(struct rtk_rpc_info *rpc_info, u32 pinId)
 {
 	struct rpc_create_video_agent *rpc = NULL;
-	unsigned int offset;
+	struct rpc_result *retval;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_create_video_agent *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(rpc->instance));
+	offset = ALIGN(sizeof(rpc->instance), RPC_ALIGN_SZ);
+	retval = (struct rpc_result *)((unsigned char *)rpc + offset);
 
 	memset_io(rpc, 0, sizeof(*rpc));
 
-	rpc->instance = htonl(pinId);
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_DESTROY,
+
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		rpc->instance = pinId;
+	} else {
+		opt = RPC_AUDIO;
+		rpc->instance = htonl(pinId);
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_DESTROY,
 			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
+			     &rpc_ret))
 		goto exit;
 
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
+	if (!rpc_info->vo_in_hifi)
+		retval->result = ntohl(retval->result);
+
+	if (retval->result != S_OK || rpc_ret != S_OK)
 		goto exit;
 
 	ret = 0;
@@ -316,30 +381,48 @@ exit:
 int rpc_create_video_agent(struct rtk_rpc_info *rpc_info, u32 *videoId, u32 pinId)
 {
 	struct rpc_create_video_agent *rpc = NULL;
-	unsigned int offset;
+	struct rpc_result *retval;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_create_video_agent *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(rpc->instance));
+	offset = ALIGN(sizeof(rpc->instance), RPC_ALIGN_SZ);
+	retval = (struct rpc_result *)((unsigned char *)rpc + offset);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->instance = htonl(pinId);
+
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		rpc->instance = pinId;
+	} else {
+		opt = RPC_AUDIO;
+		rpc->instance = htonl(pinId);
+	}
+
 #if IS_ENABLED(CONFIG_KERN_RPC_HANDLE_COMMAND)
-	if (send_rpc_command_with_pid(RPC_AUDIO, rpc_info->pid, ENUM_VIDEO_KERNEL_RPC_CREATE,
+	if (send_rpc_command_with_pid(opt, rpc_info->pid, ENUM_VIDEO_KERNEL_RPC_CREATE,
 #else
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_CREATE,
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_CREATE,
 #endif
 			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
+			     &rpc_ret))
 		goto exit;
 
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
+	if (!rpc_info->vo_in_hifi) {
+		retval->result = ntohl(retval->result);
+		retval->data = ntohl(retval->data);
+	}
+
+	if (retval->result != S_OK || rpc_ret != S_OK)
 		goto exit;
 
-	*videoId = ntohl(rpc->data);
+	*videoId = retval->data;
 	ret = 0;
 exit:
 	mutex_unlock(&rpc_info->lock);
@@ -349,28 +432,42 @@ exit:
 int rpc_video_display(struct rtk_rpc_info *rpc_info,
 		      struct rpc_vo_filter_display *argp)
 {
-	struct rpc_vo_filter_display_t *rpc = NULL;
-	unsigned int offset;
+	struct rpc_vo_filter_display *rpc = NULL;
+	struct rpc_result *retval;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
-	rpc = (struct rpc_vo_filter_display_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(*argp));
+	rpc = (struct rpc_vo_filter_display *)rpc_info->vaddr;
+	offset = ALIGN(sizeof(*argp), RPC_ALIGN_SZ);
+	retval = (struct rpc_result *)((unsigned char *)rpc + offset);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->instance = htonl(argp->instance);
-	rpc->videoPlane = htonl(argp->videoPlane);
-	rpc->zeroBuffer = argp->zeroBuffer;
-	rpc->realTimeSrc = argp->realTimeSrc;
 
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_DISPLAY,
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		memcpy(rpc, argp, sizeof(*argp));
+	} else {
+		opt = RPC_AUDIO;
+		rpc->instance = htonl(argp->instance);
+		rpc->videoPlane = htonl(argp->videoPlane);
+		rpc->zeroBuffer = argp->zeroBuffer;
+		rpc->realTimeSrc = argp->realTimeSrc;
+	}
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_DISPLAY,
 			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
+			     &rpc_ret))
 		goto exit;
 
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
+	if (!rpc_info->vo_in_hifi)
+		retval->result = ntohl(retval->result);
+
+	if (retval->result != S_OK || rpc_ret != S_OK)
 		goto exit;
 	ret = 0;
 exit:
@@ -381,39 +478,52 @@ exit:
 int rpc_video_config_disp_win(struct rtk_rpc_info *rpc_info,
 			      struct rpc_config_disp_win *argp)
 {
-	struct rpc_config_disp_win_t *rpc = NULL;
-	unsigned int offset;
+	struct rpc_config_disp_win *rpc = NULL;
+	struct rpc_result *retval;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
-	rpc = (struct rpc_config_disp_win_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(*argp));
+	rpc = (struct rpc_config_disp_win *)rpc_info->vaddr;
+	offset = ALIGN(sizeof(*argp), RPC_ALIGN_SZ);
+	retval = (struct rpc_result *)((unsigned char *)rpc + offset);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->videoPlane = htonl(argp->videoPlane);
-	rpc->videoWin.x = htons(argp->videoWin.x);
-	rpc->videoWin.y = htons(argp->videoWin.y);
-	rpc->videoWin.width = htons(argp->videoWin.width);
-	rpc->videoWin.height = htons(argp->videoWin.height);
-	rpc->borderWin.x = htons(argp->borderWin.x);
-	rpc->borderWin.y = htons(argp->borderWin.y);
-	rpc->borderWin.width = htons(argp->borderWin.width);
-	rpc->borderWin.height = htons(argp->borderWin.height);
-	rpc->borderColor.c1 = htons(argp->borderColor.c1);
-	rpc->borderColor.c2 = htons(argp->borderColor.c2);
-	rpc->borderColor.c3 = htons(argp->borderColor.c3);
-	rpc->borderColor.isRGB = htons(argp->borderColor.isRGB);
-	rpc->enBorder = argp->enBorder;
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			     ENUM_VIDEO_KERNEL_RPC_CONFIGUREDISPLAYWINDOW,
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		memcpy(rpc, argp, sizeof(*argp));
+	} else {
+		opt = RPC_AUDIO;
+		rpc->videoPlane = htonl(argp->videoPlane);
+		rpc->videoWin.x = htons(argp->videoWin.x);
+		rpc->videoWin.y = htons(argp->videoWin.y);
+		rpc->videoWin.width = htons(argp->videoWin.width);
+		rpc->videoWin.height = htons(argp->videoWin.height);
+		rpc->borderWin.x = htons(argp->borderWin.x);
+		rpc->borderWin.y = htons(argp->borderWin.y);
+		rpc->borderWin.width = htons(argp->borderWin.width);
+		rpc->borderWin.height = htons(argp->borderWin.height);
+		rpc->borderColor.c1 = htons(argp->borderColor.c1);
+		rpc->borderColor.c2 = htons(argp->borderColor.c2);
+		rpc->borderColor.c3 = htons(argp->borderColor.c3);
+		rpc->borderColor.isRGB = htons(argp->borderColor.isRGB);
+		rpc->enBorder = argp->enBorder;
+	}
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_CONFIGUREDISPLAYWINDOW,
 			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
+			     &rpc_ret))
 		goto exit;
 
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
+	if (!rpc_info->vo_in_hifi)
+		retval->result = ntohl(retval->result);
+
+	if (retval->result != S_OK || rpc_ret != S_OK)
 		goto exit;
 	ret = 0;
 exit:
@@ -423,45 +533,55 @@ exit:
 
 int rpc_video_query_dis_win(struct rtk_rpc_info *rpc_info,
 	struct rpc_query_disp_win_in *argp_in,
-	struct rpc_query_disp_win_out* argp_out)
+	struct rpc_query_disp_win_out *argp_out)
 {
 	struct rpc_query_disp_win_in *i_rpc = NULL;
 	struct rpc_query_disp_win_out *o_rpc = NULL;
-	unsigned int offset;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
-	unsigned int RPC_ret;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	i_rpc = (struct rpc_query_disp_win_in *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_query_disp_win_in));
-	o_rpc = (struct rpc_query_disp_win_out *)((unsigned long)i_rpc + offset);
+	offset = ALIGN(sizeof(*argp_in), RPC_ALIGN_SZ);
+	o_rpc = (struct rpc_query_disp_win_out *)((unsigned char *)i_rpc + offset);
 
 	memset_io(i_rpc, 0, RPC_CMD_BUFFER_SIZE);
-	i_rpc->plane =  htonl(argp_in->plane);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-		ENUM_VIDEO_KERNEL_RPC_QUERY_DISPLAY_WIN,
+
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
+
+	if (rpc_info->vo_in_hifi)
+		i_rpc->plane = argp_in->plane;
+	else
+		i_rpc->plane = htonl(argp_in->plane);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_QUERY_DISPLAY_WIN,
 		rpc_info->paddr, rpc_info->paddr + offset,
-		&RPC_ret)) {
+		&rpc_ret)) {
 		goto exit;
 	}
 
-	if (RPC_ret != S_OK)
+	if (rpc_ret != S_OK)
 		goto exit;
 
-	argp_out->plane = ntohl(o_rpc->plane);
-	argp_out->configWin.x = ntohs(o_rpc->configWin.x);
-	argp_out->configWin.y = ntohs(o_rpc->configWin.y);
-	argp_out->configWin.width = ntohs(o_rpc->configWin.width);
-	argp_out->configWin.height = ntohs(o_rpc->configWin.height);
-	argp_out->contentWin.x = ntohs(o_rpc->contentWin.x);
-	argp_out->contentWin.y = ntohs(o_rpc->contentWin.y);
-	argp_out->contentWin.width = ntohs(o_rpc->contentWin.width);
-	argp_out->contentWin.height = ntohs(o_rpc->contentWin.height);
-	argp_out->mix1_size.w = ntohs(o_rpc->mix1_size.w);
-	argp_out->mix1_size.h = ntohs(o_rpc->mix1_size.h);
-
+	if (rpc_info->vo_in_hifi) {
+		memcpy(argp_out, o_rpc, sizeof(*o_rpc));
+	} else {
+		argp_out->plane = ntohl(o_rpc->plane);
+		argp_out->configWin.x = ntohs(o_rpc->configWin.x);
+		argp_out->configWin.y = ntohs(o_rpc->configWin.y);
+		argp_out->configWin.width = ntohs(o_rpc->configWin.width);
+		argp_out->configWin.height = ntohs(o_rpc->configWin.height);
+		argp_out->contentWin.x = ntohs(o_rpc->contentWin.x);
+		argp_out->contentWin.y = ntohs(o_rpc->contentWin.y);
+		argp_out->contentWin.width = ntohs(o_rpc->contentWin.width);
+		argp_out->contentWin.height = ntohs(o_rpc->contentWin.height);
+		argp_out->mix1_size.w = ntohs(o_rpc->mix1_size.w);
+		argp_out->mix1_size.h = ntohs(o_rpc->mix1_size.h);
+	}
 	ret = 0;
 exit:
 	mutex_unlock(&rpc_info->lock);
@@ -469,37 +589,52 @@ exit:
 }
 
 int rpc_video_config_graphic(struct rtk_rpc_info *rpc_info,
-	struct rpc_config_graphic_canvas* argp)
+	struct rpc_config_graphic_canvas *argp)
 {
-	struct rpc_config_graphic_canvas_t *rpc = NULL;
-	unsigned int offset;
+	struct rpc_config_graphic_canvas *rpc = NULL;
+	struct rpc_result *retval;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
-	rpc = (struct rpc_config_graphic_canvas_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_config_graphic_canvas));
+	rpc = (struct rpc_config_graphic_canvas *)rpc_info->vaddr;
+	offset = ALIGN(sizeof(*argp), RPC_ALIGN_SZ);
+	retval = (struct rpc_result *)((unsigned char *)rpc + offset);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
-	rpc->plane = htonl(argp->plane);
-	rpc->srcWin.x = htons(argp->srcWin.x);
-	rpc->srcWin.y = htons(argp->srcWin.y);
-	rpc->srcWin.width = htons(argp->srcWin.width);
-	rpc->srcWin.height = htons(argp->srcWin.height);
-	rpc->dispWin.x = htons(argp->dispWin.x);
-	rpc->dispWin.y = htons(argp->dispWin.y);
-	rpc->dispWin.width = htons(argp->dispWin.width);
-	rpc->dispWin.height = htons(argp->dispWin.height);
-	rpc->go = argp->go;
 
-	if (send_rpc(rpc_info,RPC_AUDIO,
-		ENUM_VIDEO_KERNEL_RPC_CONFIGURE_GRAPHIC_CANVAS,
+
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		memcpy(rpc, argp, sizeof(*argp));
+	} else {
+		opt = RPC_AUDIO;
+		rpc->plane = htonl(argp->plane);
+		rpc->srcWin.x = htons(argp->srcWin.x);
+		rpc->srcWin.y = htons(argp->srcWin.y);
+		rpc->srcWin.width = htons(argp->srcWin.width);
+		rpc->srcWin.height = htons(argp->srcWin.height);
+		rpc->dispWin.x = htons(argp->dispWin.x);
+		rpc->dispWin.y = htons(argp->dispWin.y);
+		rpc->dispWin.width = htons(argp->dispWin.width);
+		rpc->dispWin.height = htons(argp->dispWin.height);
+		rpc->go = argp->go;
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_CONFIGURE_GRAPHIC_CANVAS,
 		rpc_info->paddr, rpc_info->paddr + offset,
-		&rpc->ret)) {
+		&rpc_ret)) {
 		goto exit;
 	}
 
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
+	if (!rpc_info->vo_in_hifi)
+		retval->result = ntohl(retval->result);
+
+	if (retval->result != S_OK || rpc_ret != S_OK)
 		goto exit;
 
 	ret = 0;
@@ -511,26 +646,41 @@ exit:
 int rpc_video_set_refclock(struct rtk_rpc_info *rpc_info,
 			   struct rpc_refclock *argp)
 {
-	struct rpc_refclock_t *rpc = NULL;
-	unsigned int offset;
+	struct rpc_refclock *rpc = NULL;
+	struct rpc_result *retval;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
-	rpc = (struct rpc_refclock_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(*argp));
+	rpc = (struct rpc_refclock *)rpc_info->vaddr;
+	offset = ALIGN(sizeof(*argp), RPC_ALIGN_SZ);
+	retval = (struct rpc_result *)((unsigned char *)rpc + offset);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->instance = htonl(argp->instance);
-	rpc->pRefClock = htonl(argp->pRefClock);
 
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_SETREFCLOCK,
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		memcpy(rpc, argp, sizeof(*argp));
+	} else {
+		opt = RPC_AUDIO;
+		rpc->instance = htonl(argp->instance);
+		rpc->pRefClock = htonl(argp->pRefClock);
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_SETREFCLOCK,
 			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
+			     &rpc_ret))
 		goto exit;
 
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
+	if (!rpc_info->vo_in_hifi)
+		retval->result = ntohl(retval->result);
+
+	if (retval->result != S_OK || rpc_ret != S_OK)
 		goto exit;
 	ret = 0;
 exit:
@@ -541,28 +691,87 @@ exit:
 int rpc_video_init_ringbuffer(struct rtk_rpc_info *rpc_info,
 			      struct rpc_ringbuffer *argp)
 {
-	struct rpc_ringbuffer_t *rpc = NULL;
-	unsigned int offset;
+	struct rpc_ringbuffer *rpc = NULL;
+	struct rpc_result *retval;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
-	rpc = (struct rpc_ringbuffer_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(unsigned int)*3);
+	rpc = (struct rpc_ringbuffer *)rpc_info->vaddr;
+	offset = ALIGN(sizeof(*argp), RPC_ALIGN_SZ);
+	retval = (struct rpc_result *)((unsigned char *)rpc + offset);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->instance = htonl(argp->instance);
-	rpc->readPtrIndex = htonl(argp->readPtrIndex);
-	rpc->pinID = htonl(argp->pinID);
-	rpc->pRINGBUFF_HEADER = htonl(argp->pRINGBUFF_HEADER);
 
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_INITRINGBUFFER,
-			     rpc_info->paddr + offset, rpc_info->paddr,
-			     &rpc->ret))
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		memcpy(rpc, argp, sizeof(*argp));
+	} else {
+		opt = RPC_AUDIO;
+		rpc->instance = htonl(argp->instance);
+		rpc->readPtrIndex = htonl(argp->readPtrIndex);
+		rpc->pinID = htonl(argp->pinID);
+		rpc->pRINGBUFF_HEADER = htonl(argp->pRINGBUFF_HEADER);
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_INITRINGBUFFER,
+			     rpc_info->paddr, rpc_info->paddr + offset,
+			     &rpc_ret))
 		goto exit;
 
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
+	if (!rpc_info->vo_in_hifi)
+		retval->result = ntohl(retval->result);
+
+	if (retval->result != S_OK || rpc_ret != S_OK)
+		goto exit;
+	ret = 0;
+exit:
+	mutex_unlock(&rpc_info->lock);
+	return ret;
+}
+
+int rpc_video_run_cmd(struct rtk_rpc_info *rpc_info, unsigned int instance,
+			unsigned int command)
+{
+	unsigned int *rpc = NULL;
+	struct rpc_result *retval;
+	unsigned int offset, rpc_ret = 0;
+	int ret = -1;
+
+	int opt;
+
+	mutex_lock(&rpc_info->lock);
+
+	rpc = (unsigned int *)rpc_info->vaddr;
+	offset = ALIGN(sizeof(unsigned int), RPC_ALIGN_SZ);
+	retval = (struct rpc_result *)((unsigned char *)rpc + offset);
+
+	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
+
+
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		*rpc = instance;
+	} else {
+		opt = RPC_AUDIO;
+		*rpc = htonl(instance);
+	}
+
+	if (send_rpc(rpc_info, opt, command,
+			rpc_info->paddr, rpc_info->paddr + offset,
+			&rpc_ret))
+		goto exit;
+
+	if (!rpc_info->vo_in_hifi)
+		retval->result = ntohl(retval->result);
+
+	if (retval->result != S_OK || rpc_ret != S_OK)
 		goto exit;
 	ret = 0;
 exit:
@@ -572,142 +781,27 @@ exit:
 
 int rpc_video_run(struct rtk_rpc_info *rpc_info, unsigned int instance)
 {
-	struct rpc_video_run_t *rpc = NULL;
-	unsigned int offset;
-	int ret = -1;
-
-	mutex_lock(&rpc_info->lock);
-
-	rpc = (struct rpc_video_run_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(unsigned int));
-
-	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
-
-	rpc->instance = htonl(instance);
-
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_RUN,
-			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
-		goto exit;
-
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
-		goto exit;
-	ret = 0;
-exit:
-	mutex_unlock(&rpc_info->lock);
-	return ret;
+	return rpc_video_run_cmd(rpc_info, instance, ENUM_VIDEO_KERNEL_RPC_RUN);
 }
 
 int rpc_video_pause(struct rtk_rpc_info *rpc_info, unsigned int instance)
 {
-	struct rpc_video_run_t *rpc = NULL;
-	unsigned int offset;
-	int ret = -1;
-
-	mutex_lock(&rpc_info->lock);
-
-	rpc = (struct rpc_video_run_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(unsigned int));
-
-	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
-
-	rpc->instance = htonl(instance);
-
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_PAUSE,
-			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
-		goto exit;
-
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
-		goto exit;
-	ret = 0;
-exit:
-	mutex_unlock(&rpc_info->lock);
-	return ret;
+	return rpc_video_run_cmd(rpc_info, instance, ENUM_VIDEO_KERNEL_RPC_PAUSE);
 }
 
 int rpc_video_stop(struct rtk_rpc_info *rpc_info, unsigned int instance)
 {
-	struct rpc_video_run_t *rpc = NULL;
-	unsigned int offset;
-	int ret = -1;
-
-	mutex_lock(&rpc_info->lock);
-
-	rpc = (struct rpc_video_run_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(unsigned int));
-
-	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
-
-	rpc->instance = htonl(instance);
-
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_STOP,
-			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
-		goto exit;
-
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
-		goto exit;
-	ret = 0;
-exit:
-	mutex_unlock(&rpc_info->lock);
-	return ret;
+	return rpc_video_run_cmd(rpc_info, instance, ENUM_VIDEO_KERNEL_RPC_STOP);
 }
 
 int rpc_video_flush(struct rtk_rpc_info *rpc_info, unsigned int instance)
 {
-	struct rpc_video_run_t *rpc = NULL;
-	unsigned int offset;
-	int ret = -1;
-
-	mutex_lock(&rpc_info->lock);
-
-	rpc = (struct rpc_video_run_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(unsigned int));
-
-	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
-
-	rpc->instance = htonl(instance);
-
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_FLUSH,
-			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
-		goto exit;
-
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
-		goto exit;
-	ret = 0;
-exit:
-	mutex_unlock(&rpc_info->lock);
-	return ret;
+	return rpc_video_run_cmd(rpc_info, instance, ENUM_VIDEO_KERNEL_RPC_FLUSH);
 }
 
 int rpc_video_destroy(struct rtk_rpc_info *rpc_info, unsigned int instance)
 {
-	struct rpc_video_run_t *rpc = NULL;
-	unsigned int offset;
-	int ret = -1;
-
-	mutex_lock(&rpc_info->lock);
-
-	rpc = (struct rpc_video_run_t *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(unsigned int));
-
-	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
-
-	rpc->instance = htonl(instance);
-
-	if (send_rpc(rpc_info, RPC_AUDIO, ENUM_VIDEO_KERNEL_RPC_DESTROY,
-			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc->ret))
-		goto exit;
-
-	if (ntohl(rpc->result) != S_OK || rpc->ret != S_OK)
-		goto exit;
-	ret = 0;
-exit:
-	mutex_unlock(&rpc_info->lock);
-	return ret;
+	return rpc_video_run_cmd(rpc_info, instance, ENUM_VIDEO_KERNEL_RPC_DESTROY);
 }
 
 int rpc_video_set_q_param(struct rtk_rpc_info *rpc_info,
@@ -715,21 +809,24 @@ int rpc_video_set_q_param(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_set_q_param *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_set_q_param *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_set_q_param));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_set_q_param));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_Q_PARAMETER,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_set_q_param), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_Q_PARAMETER,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -747,21 +844,24 @@ int rpc_video_config_channel_lowdelay(struct rtk_rpc_info *rpc_info, struct rpc_
 {
 	struct rpc_config_channel_lowdelay *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_config_channel_lowdelay *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_config_channel_lowdelay));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_config_channel_lowdelay));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_CONFIGCHANNELLOWDELAY,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_config_channel_lowdelay), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_CONFIGCHANNELLOWDELAY,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -780,21 +880,24 @@ int rpc_video_privateinfo_param(struct rtk_rpc_info *rpc_info, struct rpc_privat
 {
 	struct rpc_privateinfo_param *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_privateinfo_param *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_privateinfo_param));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_privateinfo_param));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_privateinfo_param), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -815,62 +918,73 @@ int rpc_video_query_disp_win_new(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_query_disp_win_in *i_rpc = NULL;
 	struct rpc_query_disp_win_out_new *o_rpc = NULL;
-	unsigned int offset;
+	unsigned int offset, rpc_ret = 0;
 	int ret = -1;
-	unsigned int RPC_ret;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	i_rpc = (struct rpc_query_disp_win_in *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_query_disp_win_in));
-	o_rpc = (struct rpc_query_disp_win_out_new *)((unsigned long)i_rpc + offset);
+	offset = ALIGN(sizeof(*argp_in), RPC_ALIGN_SZ);
+	o_rpc = (struct rpc_query_disp_win_out_new *)((unsigned char *)i_rpc + offset);
 
 	memset_io(i_rpc, 0, RPC_CMD_BUFFER_SIZE);
-	i_rpc->plane =  htonl(argp_in->plane);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-		ENUM_VIDEO_KERNEL_RPC_QUERYDISPLAYWINNEW,
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
+
+	if (rpc_info->vo_in_hifi)
+		i_rpc->plane = argp_in->plane;
+	else
+		i_rpc->plane = htonl(argp_in->plane);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_QUERYDISPLAYWINNEW,
 		rpc_info->paddr, rpc_info->paddr + offset,
-		&RPC_ret)) {
+		&rpc_ret)) {
 		goto exit;
 	}
 
-	if (RPC_ret != S_OK)
+	if (rpc_ret != S_OK)
 		goto exit;
 
-	argp_out->plane = ntohl(o_rpc->plane);
-	argp_out->numWin = ntohs(o_rpc->numWin);
-	argp_out->zOrder = ntohs(o_rpc->zOrder);
-	argp_out->configWin.x = ntohs(o_rpc->configWin.x);
-	argp_out->configWin.y = ntohs(o_rpc->configWin.y);
-	argp_out->configWin.width = ntohs(o_rpc->configWin.width);
-	argp_out->configWin.height = ntohs(o_rpc->configWin.height);
-	argp_out->contentWin.x = ntohs(o_rpc->contentWin.x);
-	argp_out->contentWin.y = ntohs(o_rpc->contentWin.y);
-	argp_out->contentWin.width = ntohs(o_rpc->contentWin.width);
-	argp_out->contentWin.height = ntohs(o_rpc->contentWin.height);
-	argp_out->deintMode = ntohs(o_rpc->deintMode);
-	argp_out->pitch = ntohs(o_rpc->pitch);
-	argp_out->colorType = ntohl(o_rpc->colorType);
-	argp_out->RGBOrder = ntohl(o_rpc->RGBOrder);
-	argp_out->format3D = ntohl(o_rpc->format3D);
-	argp_out->mix1_size.w = ntohs(o_rpc->mix1_size.w);
-	argp_out->mix1_size.h = ntohs(o_rpc->mix1_size.h);
-	argp_out->standard = ntohl(o_rpc->standard);
-	argp_out->enProg = o_rpc->enProg;
-	argp_out->cvbs_off = o_rpc->cvbs_off;
-	argp_out->srcZoomWin.x = ntohs(o_rpc->srcZoomWin.x);
-	argp_out->srcZoomWin.y = ntohs(o_rpc->srcZoomWin.y);
-	argp_out->srcZoomWin.width = ntohs(o_rpc->srcZoomWin.width);
-	argp_out->srcZoomWin.height = ntohs(o_rpc->srcZoomWin.height);
-	argp_out->mix2_size.w = ntohs(o_rpc->mix2_size.w);
-	argp_out->mix2_size.h = ntohs(o_rpc->mix2_size.h);
-	argp_out->mixdd_size.w = ntohs(o_rpc->mixdd_size.w);
-	argp_out->mixdd_size.h = ntohs(o_rpc->mixdd_size.h);
-	argp_out->wb_usedFormat = ntohl(o_rpc->wb_usedFormat);
-	argp_out->channel_total_drop_rpc = ntohl(o_rpc->channel_total_drop_rpc);
-	argp_out->channel_total_drop_rpc_anycase = ntohl(o_rpc->channel_total_drop_rpc_anycase);
-
+	if (rpc_info->vo_in_hifi) {
+		memcpy(argp_out, o_rpc, sizeof(*o_rpc));
+	} else {
+		argp_out->plane = ntohl(o_rpc->plane);
+		argp_out->numWin = ntohs(o_rpc->numWin);
+		argp_out->zOrder = ntohs(o_rpc->zOrder);
+		argp_out->configWin.x = ntohs(o_rpc->configWin.x);
+		argp_out->configWin.y = ntohs(o_rpc->configWin.y);
+		argp_out->configWin.width = ntohs(o_rpc->configWin.width);
+		argp_out->configWin.height = ntohs(o_rpc->configWin.height);
+		argp_out->contentWin.x = ntohs(o_rpc->contentWin.x);
+		argp_out->contentWin.y = ntohs(o_rpc->contentWin.y);
+		argp_out->contentWin.width = ntohs(o_rpc->contentWin.width);
+		argp_out->contentWin.height = ntohs(o_rpc->contentWin.height);
+		argp_out->deintMode = ntohs(o_rpc->deintMode);
+		argp_out->pitch = ntohs(o_rpc->pitch);
+		argp_out->colorType = ntohl(o_rpc->colorType);
+		argp_out->RGBOrder = ntohl(o_rpc->RGBOrder);
+		argp_out->format3D = ntohl(o_rpc->format3D);
+		argp_out->mix1_size.w = ntohs(o_rpc->mix1_size.w);
+		argp_out->mix1_size.h = ntohs(o_rpc->mix1_size.h);
+		argp_out->standard = ntohl(o_rpc->standard);
+		argp_out->enProg = o_rpc->enProg;
+		argp_out->cvbs_off = o_rpc->cvbs_off;
+		argp_out->srcZoomWin.x = ntohs(o_rpc->srcZoomWin.x);
+		argp_out->srcZoomWin.y = ntohs(o_rpc->srcZoomWin.y);
+		argp_out->srcZoomWin.width = ntohs(o_rpc->srcZoomWin.width);
+		argp_out->srcZoomWin.height = ntohs(o_rpc->srcZoomWin.height);
+		argp_out->mix2_size.w = ntohs(o_rpc->mix2_size.w);
+		argp_out->mix2_size.h = ntohs(o_rpc->mix2_size.h);
+		argp_out->mixdd_size.w = ntohs(o_rpc->mixdd_size.w);
+		argp_out->mixdd_size.h = ntohs(o_rpc->mixdd_size.h);
+		argp_out->wb_usedFormat = ntohl(o_rpc->wb_usedFormat);
+		argp_out->channel_total_drop_rpc = ntohl(o_rpc->channel_total_drop_rpc);
+		argp_out->channel_total_drop_rpc_anycase = ntohl(o_rpc->channel_total_drop_rpc_anycase);
+		argp_out->is_swmixer_on = ntohl(o_rpc->is_swmixer_on);
+		argp_out->is_on_mixer = ntohl(o_rpc->is_on_mixer);
+	}
 	ret = 0;
 exit:
 	mutex_unlock(&rpc_info->lock);
@@ -881,21 +995,24 @@ int rpc_video_set_speed(struct rtk_rpc_info *rpc_info, struct rpc_set_speed *arg
 {
 	struct rpc_set_speed *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_set_speed *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_set_speed));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_set_speed));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_SETSPEED,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_set_speed), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_SETSPEED,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -914,24 +1031,31 @@ int rpc_video_set_background(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_set_background *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_set_background *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_set_background));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->bgColor.c1 = ntohs(arg->bgColor.c1);
-	rpc->bgColor.c2 = ntohs(arg->bgColor.c2);
-	rpc->bgColor.c3 = ntohs(arg->bgColor.c3);
-	rpc->bgColor.isRGB = ntohs(arg->bgColor.isRGB);
-	rpc->bgEnable = arg->bgEnable;
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_SETBACKGROUND,
+	if (rpc_info->vo_in_hifi) {
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		// fix me simon
+		rpc->bgColor.c1 = ntohs(arg->bgColor.c1);
+		rpc->bgColor.c2 = ntohs(arg->bgColor.c2);
+		rpc->bgColor.c3 = ntohs(arg->bgColor.c3);
+		rpc->bgColor.isRGB = ntohs(arg->bgColor.isRGB);
+		rpc->bgEnable = arg->bgEnable;
+	}
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_SETBACKGROUND,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -949,21 +1073,24 @@ int rpc_video_keep_curpic(struct rtk_rpc_info *rpc_info, struct rpc_keep_curpic 
 {
 	struct rpc_keep_curpic *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_keep_curpic *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_keep_curpic));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_keep_curpic));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_KEEPCURPIC,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_keep_curpic), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_KEEPCURPIC,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -981,21 +1108,24 @@ int rpc_video_keep_curpic_fw(struct rtk_rpc_info *rpc_info, struct rpc_keep_curp
 {
 	struct rpc_keep_curpic *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_keep_curpic *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_keep_curpic));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_keep_curpic));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_KEEPCURPIC_FW_MALLOC,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_keep_curpic), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_KEEPCURPIC_FW_MALLOC,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1013,21 +1143,24 @@ int rpc_video_keep_curpic_svp(struct rtk_rpc_info *rpc_info, struct rpc_keep_cur
 {
 	struct rpc_keep_curpic_svp *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_keep_curpic_svp *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_keep_curpic_svp));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_keep_curpic_svp));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_KEEPCURPICSVP,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_keep_curpic_svp), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_KEEPCURPICSVP,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1045,21 +1178,24 @@ int rpc_video_set_deintflag(struct rtk_rpc_info *rpc_info, struct rpc_set_deintf
 {
 	struct rpc_set_deintflag *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_set_deintflag *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_set_deintflag));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_set_deintflag));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_SET_DEINTFLAG,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_set_deintflag), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_SET_DEINTFLAG,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1077,28 +1213,35 @@ int rpc_video_create_graphic_win(struct rtk_rpc_info *rpc_info, struct rpc_creat
 {
 	struct rpc_create_graphic_win *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_create_graphic_win *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_create_graphic_win));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->plane = ntohl(arg->plane);
-	rpc->winPos.x = ntohs(arg->winPos.x);
-	rpc->winPos.y = ntohs(arg->winPos.y);
-	rpc->winPos.width = ntohs(arg->winPos.width);
-	rpc->winPos.height = ntohs(arg->winPos.height);
-	rpc->colorFmt = ntohl(arg->colorFmt);
-	rpc->rgbOrder = ntohl(arg->rgbOrder);
-	rpc->colorKey = ntohl(arg->colorKey);
-	rpc->alpha = arg->alpha;
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_CREATEGRAPHICWINDOW,
+	if (rpc_info->vo_in_hifi) {
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		rpc->plane = ntohl(arg->plane);
+		rpc->winPos.x = ntohs(arg->winPos.x);
+		rpc->winPos.y = ntohs(arg->winPos.y);
+		rpc->winPos.width = ntohs(arg->winPos.width);
+		rpc->winPos.height = ntohs(arg->winPos.height);
+		rpc->colorFmt = ntohl(arg->colorFmt);
+		rpc->rgbOrder = ntohl(arg->rgbOrder);
+		rpc->colorKey = ntohl(arg->colorKey);
+		rpc->alpha = arg->alpha;
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_CREATEGRAPHICWINDOW,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1116,34 +1259,41 @@ int rpc_video_draw_graphic_win(struct rtk_rpc_info *rpc_info, struct rpc_draw_gr
 {
 	struct rpc_draw_graphic_win *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
 	int i;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_draw_graphic_win *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_draw_graphic_win));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->plane = ntohl(arg->plane);
-	rpc->winID = ntohs(arg->winID);
-	rpc->storageMode = ntohl(arg->storageMode);
-	rpc->paletteIndex = arg->paletteIndex;
-	rpc->compressed = arg->compressed;
-	rpc->interlace_Frame = arg->interlace_Frame;
-	rpc->bottomField = arg->bottomField;
-	for (i = 0; i < 4; i++) {
-		rpc->startX[i] = ntohs(arg->startX[i]);
-		rpc->startY[i] = ntohs(arg->startY[i]);
-		rpc->imgPitch[i] = ntohs(arg->imgPitch[i]);
-		rpc->pImage[i] = ntohl(arg->pImage[i]);
-	}
-	rpc->go = arg->go;
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_DRAWGRAPHICWINDOW,
+	if (rpc_info->vo_in_hifi) {
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		rpc->plane = ntohl(arg->plane);
+		rpc->winID = ntohs(arg->winID);
+		rpc->storageMode = ntohl(arg->storageMode);
+		rpc->paletteIndex = arg->paletteIndex;
+		rpc->compressed = arg->compressed;
+		rpc->interlace_Frame = arg->interlace_Frame;
+		rpc->bottomField = arg->bottomField;
+		for (i = 0; i < 4; i++) {
+			rpc->startX[i] = ntohs(arg->startX[i]);
+			rpc->startY[i] = ntohs(arg->startY[i]);
+			rpc->imgPitch[i] = ntohs(arg->imgPitch[i]);
+			rpc->pImage[i] = ntohl(arg->pImage[i]);
+		}
+		rpc->go = arg->go;
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_DRAWGRAPHICWINDOW,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1161,42 +1311,49 @@ int rpc_video_modify_graphic_win(struct rtk_rpc_info *rpc_info, struct rpc_modif
 {
 	struct rpc_modify_graphic_win *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1, i;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_modify_graphic_win *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_modify_graphic_win));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->plane = ntohl(arg->plane);
-	rpc->winID = arg->winID;
-	rpc->reqMask = arg->reqMask;
-	rpc->winPos.x = ntohs(arg->winPos.x);
-	rpc->winPos.y = ntohs(arg->winPos.y);
-	rpc->winPos.width = ntohs(arg->winPos.width);
-	rpc->winPos.height = ntohs(arg->winPos.height);
-	rpc->colorFmt = ntohl(arg->colorFmt);
-	rpc->rgbOrder = ntohl(arg->rgbOrder);
-	rpc->colorKey = ntohl(arg->colorKey);
-	rpc->alpha = arg->alpha;
-	rpc->storageMode = ntohl(arg->storageMode);
-	rpc->paletteIndex = arg->paletteIndex;
-	rpc->compressed = arg->compressed;
-	rpc->interlace_Frame = arg->interlace_Frame;
-	rpc->bottomField = arg->bottomField;
-	for (i = 0; i < 4; i++) {
-		rpc->startX[i] = ntohs(arg->startX[i]);
-		rpc->startY[i] = ntohs(arg->startY[i]);
-		rpc->imgPitch[i] = ntohs(arg->imgPitch[i]);
-		rpc->pImage[i] = ntohl(arg->pImage[i]);
-	}
-	rpc->go = arg->go;
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_MODIFYGRAPHICWINDOW,
+	if (rpc_info->vo_in_hifi) {
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		rpc->plane = ntohl(arg->plane);
+		rpc->winID = arg->winID;
+		rpc->reqMask = arg->reqMask;
+		rpc->winPos.x = ntohs(arg->winPos.x);
+		rpc->winPos.y = ntohs(arg->winPos.y);
+		rpc->winPos.width = ntohs(arg->winPos.width);
+		rpc->winPos.height = ntohs(arg->winPos.height);
+		rpc->colorFmt = ntohl(arg->colorFmt);
+		rpc->rgbOrder = ntohl(arg->rgbOrder);
+		rpc->colorKey = ntohl(arg->colorKey);
+		rpc->alpha = arg->alpha;
+		rpc->storageMode = ntohl(arg->storageMode);
+		rpc->paletteIndex = arg->paletteIndex;
+		rpc->compressed = arg->compressed;
+		rpc->interlace_Frame = arg->interlace_Frame;
+		rpc->bottomField = arg->bottomField;
+		for (i = 0; i < 4; i++) {
+			rpc->startX[i] = ntohs(arg->startX[i]);
+			rpc->startY[i] = ntohs(arg->startY[i]);
+			rpc->imgPitch[i] = ntohs(arg->imgPitch[i]);
+			rpc->pImage[i] = ntohl(arg->pImage[i]);
+		}
+		rpc->go = arg->go;
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_MODIFYGRAPHICWINDOW,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1214,22 +1371,29 @@ int rpc_video_delete_graphic_win(struct rtk_rpc_info *rpc_info, struct rpc_delet
 {
 	struct rpc_delete_graphic_win *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_delete_graphic_win *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_delete_graphic_win));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->plane = ntohl(arg->plane);
-	rpc->winID = ntohs(arg->winID);
-	rpc->go = arg->go;
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_DELETEGRAPHICWINDOW,
+	if (rpc_info->vo_in_hifi) {
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		rpc->plane = ntohl(arg->plane);
+		rpc->winID = ntohs(arg->winID);
+		rpc->go = arg->go;
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_DELETEGRAPHICWINDOW,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1247,21 +1411,28 @@ int rpc_video_config_osd_palette(struct rtk_rpc_info *rpc_info, struct rpc_confi
 {
 	struct rpc_config_osd_palette *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_config_osd_palette *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_config_osd_palette));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->paletteIndex = arg->paletteIndex;
-	rpc->pPalette = ntohl(arg->pPalette);
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_CONFIGUREOSDPALETTE,
+	if (rpc_info->vo_in_hifi) {
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		rpc->paletteIndex = arg->paletteIndex;
+		rpc->pPalette = ntohl(arg->pPalette);
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_CONFIGUREOSDPALETTE,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1279,30 +1450,37 @@ int rpc_video_config_plane_mixer(struct rtk_rpc_info *rpc_info, struct rpc_confi
 {
 	struct rpc_config_plane_mixer *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1, i;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_config_plane_mixer *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_config_plane_mixer));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	rpc->instanceId = ntohl(arg->instanceId);
-	rpc->targetPlane = ntohl(arg->targetPlane);
-	for (i = 0; i < 8; i++) {
-		rpc->mixOrder[i] = ntohl(arg->mixOrder[i]);
-		rpc->win[i].winID = ntohl(arg->win[i].winID);
-		rpc->win[i].opacity = ntohs(arg->win[i].opacity);
-		rpc->win[i].alpha = ntohs(arg->win[i].alpha);
-	}
-	rpc->dataIn0 = ntohl(arg->dataIn0);
-	rpc->dataIn1 = ntohl(arg->dataIn1);
-	rpc->dataIn2 = ntohl(arg->dataIn2);
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_PMIXER_CONFIGUREPLANEMIXER,
+	if (rpc_info->vo_in_hifi) {
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		rpc->instanceId = ntohl(arg->instanceId);
+		rpc->targetPlane = ntohl(arg->targetPlane);
+		for (i = 0; i < 8; i++) {
+			rpc->mixOrder[i] = ntohl(arg->mixOrder[i]);
+			rpc->win[i].winID = ntohl(arg->win[i].winID);
+			rpc->win[i].opacity = ntohs(arg->win[i].opacity);
+			rpc->win[i].alpha = ntohs(arg->win[i].alpha);
+		}
+		rpc->dataIn0 = ntohl(arg->dataIn0);
+		rpc->dataIn1 = ntohl(arg->dataIn1);
+		rpc->dataIn2 = ntohl(arg->dataIn2);
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_PMIXER_CONFIGUREPLANEMIXER,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1320,21 +1498,24 @@ int rpc_video_set_sdrflag(struct rtk_rpc_info *rpc_info, struct rpc_set_sdrflag 
 {
 	struct rpc_set_sdrflag *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int ret = -1;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_set_sdrflag *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_set_sdrflag));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
 	memset_io(rpc, 0, RPC_CMD_BUFFER_SIZE);
 
-	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
-			sizeof(struct rpc_set_sdrflag));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_SET_ENHANCEDSDR,
+	ipcCopyMemory((unsigned char *)rpc, (unsigned char *)arg,
+			sizeof(struct rpc_set_sdrflag), rpc_info->vo_in_hifi);
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_SET_ENHANCEDSDR,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1354,12 +1535,14 @@ int rpc_set_spd_infoframe(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_privateinfo_param *i_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	char vendor[8];
 	char product[16];
 	int ret;
+	int opt;
 
 	memset_io(vendor, 0, sizeof(vendor));
+
 	memset_io(product, 0, sizeof(product));
 	memcpy(vendor, vendor_str, min(sizeof(vendor), strlen(vendor_str)));
 	memcpy(product, product_str, min(sizeof(product), strlen(product_str)));
@@ -1370,23 +1553,39 @@ int rpc_set_spd_infoframe(struct rtk_rpc_info *rpc_info,
 	offset = ALIGN(sizeof(struct rpc_privateinfo_param), RPC_ALIGN_SZ);
 
 	memset_io(i_rpc, 0, sizeof(*i_rpc));
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	i_rpc->instanceId = htonl(0);
-	i_rpc->type = htonl(ENUM_PRIVATEINFO_HDMI_SPDINFOFRAME_ENABLE);
-	i_rpc->privateInfo[0] = htonl(enable);
+	if (opt != RPC_AUDIO) {
+		i_rpc->instanceId = 0;
+		i_rpc->type = ENUM_PRIVATEINFO_HDMI_SPDINFOFRAME_ENABLE;
+		i_rpc->privateInfo[0] = enable;
 
-	i_rpc->privateInfo[1] = (vendor[3] << 24) | (vendor[2] << 16) | (vendor[1] << 8) | (vendor[0]);
-	i_rpc->privateInfo[2] = (vendor[7] << 24) | (vendor[6] << 16) | (vendor[5] << 8) | (vendor[4]);
+		i_rpc->privateInfo[1] = (vendor[0] << 24) | (vendor[1] << 16) | (vendor[2] << 8) | (vendor[3]);
+		i_rpc->privateInfo[2] = (vendor[4] << 24) | (vendor[5] << 16) | (vendor[6] << 8) | (vendor[7]);
 
-	i_rpc->privateInfo[3] = (product[3] << 24) | (product[2] << 16) | (product[1] << 8) | (product[0]);
-	i_rpc->privateInfo[4] = (product[7] << 24) | (product[6] << 16) | (product[5] << 8) | (product[4]);
-	i_rpc->privateInfo[5] = (product[11] << 24) | (product[10] << 16) | (product[9] << 8) | (product[8]);
-	i_rpc->privateInfo[6] = (product[15] << 24) | (product[14] << 16) | (product[13] << 8) | (product[12]);
+		i_rpc->privateInfo[3] = (product[0] << 24) | (product[1] << 16) | (product[2] << 8) | (product[3]);
+		i_rpc->privateInfo[4] = (product[4] << 24) | (product[5] << 16) | (product[6] << 8) | (product[7]);
+		i_rpc->privateInfo[5] = (product[8] << 24) | (product[9] << 16) | (product[10] << 8) | (product[11]);
+		i_rpc->privateInfo[6] = (product[12] << 24) | (product[13] << 16) | (product[14] << 8) | (product[15]);
 
-	i_rpc->privateInfo[7] =  htonl(sdi);
+		i_rpc->privateInfo[7] =  sdi;
+	} else {
+		i_rpc->instanceId = htonl(0);
+		i_rpc->type = htonl(ENUM_PRIVATEINFO_HDMI_SPDINFOFRAME_ENABLE);
+		i_rpc->privateInfo[0] = htonl(enable);
 
-	ret = send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
+		i_rpc->privateInfo[1] = (vendor[3] << 24) | (vendor[2] << 16) | (vendor[1] << 8) | (vendor[0]);
+		i_rpc->privateInfo[2] = (vendor[7] << 24) | (vendor[6] << 16) | (vendor[5] << 8) | (vendor[4]);
+
+		i_rpc->privateInfo[3] = (product[3] << 24) | (product[2] << 16) | (product[1] << 8) | (product[0]);
+		i_rpc->privateInfo[4] = (product[7] << 24) | (product[6] << 16) | (product[5] << 8) | (product[4]);
+		i_rpc->privateInfo[5] = (product[11] << 24) | (product[10] << 16) | (product[9] << 8) | (product[8]);
+		i_rpc->privateInfo[6] = (product[15] << 24) | (product[14] << 16) | (product[13] << 8) | (product[12]);
+
+		i_rpc->privateInfo[7] =  htonl(sdi);
+	}
+
+	ret = send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret);
 
@@ -1399,12 +1598,17 @@ int rpc_send_edid_raw_data(struct rtk_rpc_info *rpc_info,
 			u8 *edid_data, u32 edid_size)
 {
 	int ret;
-	u32 rpc_ret;
+	u32 rpc_ret = 0;
 	struct rpc_vout_edid_raw_data *rpc;
 	unsigned int offset;
 	unsigned long edid_offset;
 
 	mutex_lock(&rpc_info->lock);
+
+	if (rpc_info->ao_in_hifi == NULL) {
+		ret = -ENXIO;
+		goto exit;
+	}
 
 	rpc = (struct rpc_vout_edid_raw_data *)rpc_info->vaddr;
 	offset = ALIGN(sizeof(struct rpc_vout_edid_raw_data), RPC_ALIGN_SZ);
@@ -1442,11 +1646,16 @@ int rpc_set_hdmi_audio_onoff(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_audio_ctrl_data *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int opt;
 	int ret;
 
 	mutex_lock(&rpc_info->lock);
+
+	if (rpc_info->ao_in_hifi == NULL) {
+		ret = -ENXIO;
+		goto exit;
+	}
 
 	rpc = (struct rpc_audio_ctrl_data *)rpc_info->vaddr;
 	offset = ALIGN(sizeof(struct rpc_audio_ctrl_data), RPC_ALIGN_SZ);
@@ -1480,11 +1689,16 @@ int rpc_send_hdmi_freq(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_audio_hdmi_freq *rpc;
 	uint32_t offset;
-	uint32_t rpc_ret;
+	uint32_t rpc_ret = 0;
 	int opt;
 	int ret;
 
 	mutex_lock(&rpc_info->lock);
+
+	if (rpc_info->ao_in_hifi == NULL) {
+		ret = -ENXIO;
+		goto exit;
+	}
 
 	rpc = (struct rpc_audio_hdmi_freq *)rpc_info->vaddr;
 	offset = ALIGN(sizeof(struct rpc_audio_hdmi_freq), RPC_ALIGN_SZ);
@@ -1503,6 +1717,7 @@ int rpc_send_hdmi_freq(struct rtk_rpc_info *rpc_info,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret);
 
+exit:
 	mutex_unlock(&rpc_info->lock);
 	return ret;
 }
@@ -1512,22 +1727,28 @@ int rpc_set_vrr(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_vout_hdmi_vrr *rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret = -EIO, i;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	rpc = (struct rpc_vout_hdmi_vrr *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_vout_hdmi_vrr));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
-	rpc->vrr_function = htonl(arg->vrr_function);
-	rpc->vrr_act = htonl(arg->vrr_act);
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	for (i = 0; i < 15; i++)
-		rpc->reserved[i] = htonl(arg->reserved[i]);
+	if (rpc_info->vo_in_hifi) {
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		rpc->vrr_function = htonl(arg->vrr_function);
+		rpc->vrr_act = htonl(arg->vrr_act);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_SET_HDMI_VRR,
+		for (i = 0; i < 15; i++)
+			rpc->reserved[i] = htonl(arg->reserved[i]);
+	}
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_SET_HDMI_VRR,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret))
 		goto exit;
@@ -1544,8 +1765,9 @@ int rpc_query_out_interface(struct rtk_rpc_info *rpc_info,
 	struct rpc_set_display_out_interface *i_rpc = NULL;
 	struct rpc_set_display_out_interface *o_rpc = NULL;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret = -EIO;
+
 	int opt;
 
 	mutex_lock(&rpc_info->lock);
@@ -1554,23 +1776,31 @@ int rpc_query_out_interface(struct rtk_rpc_info *rpc_info,
 	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 	o_rpc = (struct rpc_set_display_out_interface *)((unsigned long)i_rpc + offset);
 
-	opt = RPC_AUDIO;
-	i_rpc->display_interface = htonl(arg->display_interface);
 
-	if (send_rpc(rpc_info, opt,
-			     ENUM_VIDEO_KERNEL_RPC_GET_DISPLAY_OUTPUT_INTERFACE,
-			     rpc_info->paddr, rpc_info->paddr + offset,
-			     &rpc_ret)) {
-		goto exit;
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		i_rpc->display_interface = arg->display_interface;
+	} else {
+		opt = RPC_AUDIO;
+		i_rpc->display_interface = htonl(arg->display_interface);
 	}
 
-	arg->cmd_version = htonl(o_rpc->cmd_version);
-	arg->display_interface = htonl(o_rpc->display_interface);
-	arg->width = htonl(o_rpc->width);
-	arg->height = htonl(o_rpc->height);
-	arg->frame_rate = htonl(o_rpc->frame_rate);
-	arg->hdr_mode = htonl(o_rpc->hdr_mode);
-	arg->display_interface_mixer = htonl(o_rpc->display_interface_mixer);
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_GET_DISPLAY_OUTPUT_INTERFACE,
+			     rpc_info->paddr, rpc_info->paddr + offset,
+			     &rpc_ret))
+		goto exit;
+
+	if (rpc_info->vo_in_hifi) {
+		memcpy(arg, o_rpc, sizeof(*o_rpc));
+	} else {
+		arg->cmd_version = htonl(o_rpc->cmd_version);
+		arg->display_interface = htonl(o_rpc->display_interface);
+		arg->width = htonl(o_rpc->width);
+		arg->height = htonl(o_rpc->height);
+		arg->frame_rate = htonl(o_rpc->frame_rate);
+		arg->hdr_mode = htonl(o_rpc->hdr_mode);
+		arg->display_interface_mixer = htonl(o_rpc->display_interface_mixer);
+	}
 
 	ret = 0;
 exit:
@@ -1583,8 +1813,9 @@ int rpc_set_out_interface(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_set_display_out_interface *rpc = NULL;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret = -EIO;
+
 	int opt;
 
 	mutex_lock(&rpc_info->lock);
@@ -1592,15 +1823,23 @@ int rpc_set_out_interface(struct rtk_rpc_info *rpc_info,
 	rpc = (struct rpc_set_display_out_interface *)rpc_info->vaddr;
 	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
-	opt = RPC_AUDIO;
-	rpc->display_interface       = htonl(arg->display_interface);
-	rpc->width                   = htonl(arg->width);
-	rpc->height                  = htonl(arg->height);
-	rpc->frame_rate              = htonl(arg->frame_rate);
-	rpc->display_interface_mixer = htonl(arg->display_interface_mixer);
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	if (send_rpc(rpc_info, opt,
-			     ENUM_VIDEO_KERNEL_RPC_SET_DISPLAY_OUTPUT_INTERFACE,
+	if (rpc_info->vo_in_hifi) {
+		rpc->display_interface       = arg->display_interface;
+		rpc->width                   = arg->width;
+		rpc->height                  = arg->height;
+		rpc->frame_rate              = arg->frame_rate;
+		rpc->display_interface_mixer = arg->display_interface_mixer;
+	} else {
+		rpc->display_interface       = htonl(arg->display_interface);
+		rpc->width                   = htonl(arg->width);
+		rpc->height                  = htonl(arg->height);
+		rpc->frame_rate              = htonl(arg->frame_rate);
+		rpc->display_interface_mixer = htonl(arg->display_interface_mixer);
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_SET_DISPLAY_OUTPUT_INTERFACE,
 			     rpc_info->paddr, rpc_info->paddr + offset,
 			     &rpc_ret)) {
 		goto exit;
@@ -1619,10 +1858,15 @@ int rpc_query_tv_system(struct rtk_rpc_info *rpc_info,
 	struct rpc_config_tv_system *i_rpc = NULL;
 	struct rpc_config_tv_system *o_rpc = NULL;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret = -EIO, i;
 
 	mutex_lock(&rpc_info->lock);
+
+	if (rpc_info->hdmi_new_mac == NULL) {
+		ret = -ENXIO;
+		goto exit;
+	}
 
 	if (*rpc_info->hdmi_new_mac) {
 		ret = -EPERM;
@@ -1630,11 +1874,10 @@ int rpc_query_tv_system(struct rtk_rpc_info *rpc_info,
 	}
 
 	i_rpc = (struct rpc_config_tv_system *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_config_tv_system));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 	o_rpc = (struct rpc_config_tv_system *)((unsigned long)i_rpc + offset);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			     ENUM_VIDEO_KERNEL_RPC_QUERY_CONFIG_TV_SYSTEM,
+	if (send_rpc(rpc_info, (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO), ENUM_VIDEO_KERNEL_RPC_QUERY_CONFIG_TV_SYSTEM,
 			     rpc_info->paddr, rpc_info->paddr + offset,
 			     &rpc_ret))
 		goto exit;
@@ -1642,19 +1885,23 @@ int rpc_query_tv_system(struct rtk_rpc_info *rpc_info,
 	for (i = 0; i < sizeof(struct rpc_config_tv_system); i++)
 		((char *)arg)[i] = ((char *)o_rpc)[i];
 
-	arg->interfaceType = htonl(arg->interfaceType);
-	arg->videoInfo.standard = htonl(arg->videoInfo.standard);
-	arg->videoInfo.pedType  = htonl(arg->videoInfo.pedType);
-	arg->videoInfo.dataInt0 = htonl(arg->videoInfo.dataInt0);
-	arg->videoInfo.dataInt1 = htonl(arg->videoInfo.dataInt1);
+	if (rpc_info->vo_in_hifi) {
+		memcpy(arg, o_rpc, sizeof(*o_rpc));
+	} else {
+		arg->interfaceType = htonl(arg->interfaceType);
+		arg->videoInfo.standard = htonl(arg->videoInfo.standard);
+		arg->videoInfo.pedType  = htonl(arg->videoInfo.pedType);
+		arg->videoInfo.dataInt0 = htonl(arg->videoInfo.dataInt0);
+		arg->videoInfo.dataInt1 = htonl(arg->videoInfo.dataInt1);
 
-	arg->info_frame.hdmiMode  = htonl(arg->info_frame.hdmiMode);
-	arg->info_frame.audioSampleFreq = htonl(arg->info_frame.audioSampleFreq);
-	arg->info_frame.dataInt0  = htonl(arg->info_frame.dataInt0);
-	arg->info_frame.hdmi2px_feature = htonl(arg->info_frame.hdmi2px_feature);
-	arg->info_frame.hdmi_off_mode = htonl(arg->info_frame.hdmi_off_mode);
-	arg->info_frame.hdr_ctrl_mode = htonl(arg->info_frame.hdr_ctrl_mode);
-	arg->info_frame.reserved4 = htonl(arg->info_frame.reserved4);
+		arg->info_frame.hdmiMode  = htonl(arg->info_frame.hdmiMode);
+		arg->info_frame.audioSampleFreq = htonl(arg->info_frame.audioSampleFreq);
+		arg->info_frame.dataInt0  = htonl(arg->info_frame.dataInt0);
+		arg->info_frame.hdmi2px_feature = htonl(arg->info_frame.hdmi2px_feature);
+		arg->info_frame.hdmi_off_mode = htonl(arg->info_frame.hdmi_off_mode);
+		arg->info_frame.hdr_ctrl_mode = htonl(arg->info_frame.hdr_ctrl_mode);
+		arg->info_frame.reserved4 = htonl(arg->info_frame.reserved4);
+	}
 
 	ret = 0;
 exit:
@@ -1667,10 +1914,17 @@ int rpc_set_tv_system(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_config_tv_system *rpc = NULL;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret = -EIO, i;
 
+	int opt;
+
 	mutex_lock(&rpc_info->lock);
+
+	if (rpc_info->hdmi_new_mac == NULL) {
+		ret = -ENXIO;
+		goto exit;
+	}
 
 	if (*rpc_info->hdmi_new_mac) {
 		ret = -EPERM;
@@ -1678,27 +1932,34 @@ int rpc_set_tv_system(struct rtk_rpc_info *rpc_info,
 	}
 
 	rpc = (struct rpc_config_tv_system *)rpc_info->vaddr;
-	offset = get_rpc_alignment_offset(sizeof(struct rpc_config_tv_system));
+	offset = ALIGN(sizeof(*arg), RPC_ALIGN_SZ);
 
-	for (i = 0; i < sizeof(struct rpc_config_tv_system); i++)
-		((char *)rpc)[i] = ((char *)arg)[i];
 
-	rpc->interfaceType = htonl(arg->interfaceType);
-	rpc->videoInfo.standard = htonl(arg->videoInfo.standard);
-	rpc->videoInfo.pedType  = htonl(arg->videoInfo.pedType);
-	rpc->videoInfo.dataInt0 = htonl(arg->videoInfo.dataInt0);
-	rpc->videoInfo.dataInt1 = htonl(arg->videoInfo.dataInt1);
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		memcpy(rpc, arg, sizeof(*arg));
+	} else {
+		opt = RPC_AUDIO;
 
-	rpc->info_frame.hdmiMode  = htonl(arg->info_frame.hdmiMode);
-	rpc->info_frame.audioSampleFreq = htonl(arg->info_frame.audioSampleFreq);
-	rpc->info_frame.dataInt0  = htonl(arg->info_frame.dataInt0);
-	rpc->info_frame.hdmi2px_feature = htonl(arg->info_frame.hdmi2px_feature);
-	rpc->info_frame.hdmi_off_mode = htonl(arg->info_frame.hdmi_off_mode);
-	rpc->info_frame.hdr_ctrl_mode = htonl(arg->info_frame.hdr_ctrl_mode);
-	rpc->info_frame.reserved4 = htonl(arg->info_frame.reserved4);
+		for (i = 0; i < sizeof(struct rpc_config_tv_system); i++)
+			((char *)rpc)[i] = ((char *)arg)[i];
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			     ENUM_VIDEO_KERNEL_RPC_CONFIG_TV_SYSTEM,
+		rpc->interfaceType = htonl(arg->interfaceType);
+		rpc->videoInfo.standard = htonl(arg->videoInfo.standard);
+		rpc->videoInfo.pedType  = htonl(arg->videoInfo.pedType);
+		rpc->videoInfo.dataInt0 = htonl(arg->videoInfo.dataInt0);
+		rpc->videoInfo.dataInt1 = htonl(arg->videoInfo.dataInt1);
+
+		rpc->info_frame.hdmiMode  = htonl(arg->info_frame.hdmiMode);
+		rpc->info_frame.audioSampleFreq = htonl(arg->info_frame.audioSampleFreq);
+		rpc->info_frame.dataInt0  = htonl(arg->info_frame.dataInt0);
+		rpc->info_frame.hdmi2px_feature = htonl(arg->info_frame.hdmi2px_feature);
+		rpc->info_frame.hdmi_off_mode = htonl(arg->info_frame.hdmi_off_mode);
+		rpc->info_frame.hdr_ctrl_mode = htonl(arg->info_frame.hdr_ctrl_mode);
+		rpc->info_frame.reserved4 = htonl(arg->info_frame.reserved4);
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_CONFIG_TV_SYSTEM,
 			     rpc_info->paddr, rpc_info->paddr + offset,
 			     &rpc_ret))
 		goto exit;
@@ -1715,10 +1976,15 @@ int rpc_get_display_format(struct rtk_rpc_info *rpc_info,
 	struct rpc_display_output_format *i_rpc;
 	struct rpc_display_output_format *o_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret;
 
 	mutex_lock(&rpc_info->lock);
+
+	if (rpc_info->hdmi_new_mac == NULL) {
+		ret = -ENXIO;
+		goto exit;
+	}
 
 	if (!*rpc_info->hdmi_new_mac) {
 		ret = -EPERM;
@@ -1726,11 +1992,10 @@ int rpc_get_display_format(struct rtk_rpc_info *rpc_info,
 	}
 
 	i_rpc = (struct rpc_display_output_format *)rpc_info->vaddr;
-	offset = ALIGN(sizeof(struct rpc_config_tv_system), 128);
+	offset = ALIGN(sizeof(struct rpc_config_tv_system), RPC_ALIGN_SZ);
 	o_rpc = (struct rpc_display_output_format *)((unsigned long)i_rpc + offset);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_GET_DISPLAY_OUTPUT_FORMAT,
+	if (send_rpc(rpc_info, (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO), ENUM_VIDEO_KERNEL_RPC_GET_DISPLAY_OUTPUT_FORMAT,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret)) {
 		ret = -EIO;
@@ -1742,20 +2007,24 @@ int rpc_get_display_format(struct rtk_rpc_info *rpc_info,
 		goto exit;
 	}
 
-	output_fmt->cmd_version = htonl(o_rpc->cmd_version);
-	output_fmt->display_mode = htonl(o_rpc->display_mode);
-	output_fmt->vic = htonl(o_rpc->vic);
-	output_fmt->clock = htonl(o_rpc->clock);
-	output_fmt->is_fractional_fps = htonl(o_rpc->is_fractional_fps);
-	output_fmt->colorspace = htonl(o_rpc->colorspace);
-	output_fmt->color_depth = htonl(o_rpc->color_depth);
-	output_fmt->tmds_config = htonl(o_rpc->tmds_config);
-	output_fmt->hdr_mode = htonl(o_rpc->hdr_mode);
-	memcpy(&output_fmt->avi_infoframe, &o_rpc->avi_infoframe,
+	if (rpc_info->vo_in_hifi) {
+		memcpy(output_fmt, o_rpc, sizeof(*o_rpc));
+	} else {
+		output_fmt->cmd_version = htonl(o_rpc->cmd_version);
+		output_fmt->display_mode = htonl(o_rpc->display_mode);
+		output_fmt->vic = htonl(o_rpc->vic);
+		output_fmt->clock = htonl(o_rpc->clock);
+		output_fmt->is_fractional_fps = htonl(o_rpc->is_fractional_fps);
+		output_fmt->colorspace = htonl(o_rpc->colorspace);
+		output_fmt->color_depth = htonl(o_rpc->color_depth);
+		output_fmt->tmds_config = htonl(o_rpc->tmds_config);
+		output_fmt->hdr_mode = htonl(o_rpc->hdr_mode);
+		memcpy(&output_fmt->avi_infoframe, &o_rpc->avi_infoframe,
 			sizeof(struct rtk_infoframe_packet));
-	output_fmt->src_3d_fmt = htonl(o_rpc->src_3d_fmt);
-	output_fmt->dst_3d_fmt = htonl(o_rpc->dst_3d_fmt);
-	output_fmt->en_dithering = htonl(o_rpc->en_dithering);
+		output_fmt->src_3d_fmt = htonl(o_rpc->src_3d_fmt);
+		output_fmt->dst_3d_fmt = htonl(o_rpc->dst_3d_fmt);
+		output_fmt->en_dithering = htonl(o_rpc->en_dithering);
+	}
 
 	ret = 0;
 exit:
@@ -1769,10 +2038,17 @@ int rpc_set_display_format(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_display_output_format *i_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret;
 
+	int opt;
+
 	mutex_lock(&rpc_info->lock);
+
+	if (rpc_info->hdmi_new_mac == NULL) {
+		ret = -ENXIO;
+		goto exit;
+	}
 
 	if (!*rpc_info->hdmi_new_mac) {
 		ret = -EPERM;
@@ -1780,26 +2056,33 @@ int rpc_set_display_format(struct rtk_rpc_info *rpc_info,
 	}
 
 	i_rpc = (struct rpc_display_output_format *)rpc_info->vaddr;
-	offset = ALIGN(sizeof(struct rpc_config_tv_system), 128);
+	offset = ALIGN(sizeof(struct rpc_config_tv_system), RPC_ALIGN_SZ);
 
 	memset_io(i_rpc, 0, sizeof(*i_rpc));
-	i_rpc->cmd_version = htonl(output_fmt->cmd_version);
-	i_rpc->display_mode = htonl(output_fmt->display_mode);
-	i_rpc->vic = htonl(output_fmt->vic);
-	i_rpc->clock = htonl(output_fmt->clock);
-	i_rpc->is_fractional_fps = htonl(output_fmt->is_fractional_fps);
-	i_rpc->colorspace = htonl(output_fmt->colorspace);
-	i_rpc->color_depth = htonl(output_fmt->color_depth);
-	i_rpc->tmds_config = htonl(output_fmt->tmds_config);
-	i_rpc->hdr_mode = htonl(output_fmt->hdr_mode);
-	memcpy(&i_rpc->avi_infoframe, &output_fmt->avi_infoframe,
-			sizeof(struct rtk_infoframe_packet));
-	i_rpc->src_3d_fmt = htonl(output_fmt->src_3d_fmt);
-	i_rpc->dst_3d_fmt = htonl(output_fmt->dst_3d_fmt);
-	i_rpc->en_dithering = htonl(output_fmt->en_dithering);
 
-	if (send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_SET_DISPLAY_OUTPUT_FORMAT,
+
+	if (rpc_info->vo_in_hifi) {
+		opt = RPC_HIFI;
+		memcpy(i_rpc, output_fmt, sizeof(*output_fmt));
+	} else {
+		opt = RPC_AUDIO;
+		i_rpc->cmd_version = htonl(output_fmt->cmd_version);
+		i_rpc->display_mode = htonl(output_fmt->display_mode);
+		i_rpc->vic = htonl(output_fmt->vic);
+		i_rpc->clock = htonl(output_fmt->clock);
+		i_rpc->is_fractional_fps = htonl(output_fmt->is_fractional_fps);
+		i_rpc->colorspace = htonl(output_fmt->colorspace);
+		i_rpc->color_depth = htonl(output_fmt->color_depth);
+		i_rpc->tmds_config = htonl(output_fmt->tmds_config);
+		i_rpc->hdr_mode = htonl(output_fmt->hdr_mode);
+		memcpy(&i_rpc->avi_infoframe, &output_fmt->avi_infoframe,
+			sizeof(struct rtk_infoframe_packet));
+		i_rpc->src_3d_fmt = htonl(output_fmt->src_3d_fmt);
+		i_rpc->dst_3d_fmt = htonl(output_fmt->dst_3d_fmt);
+		i_rpc->en_dithering = htonl(output_fmt->en_dithering);
+	}
+
+	if (send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_SET_DISPLAY_OUTPUT_FORMAT,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret)) {
 		ret = -EIO;
@@ -1823,11 +2106,16 @@ int rpc_set_hdmi_audio_mute(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_audio_mute_info *i_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int opt;
 	int ret;
 
 	mutex_lock(&rpc_info->lock);
+
+	if (rpc_info->ao_in_hifi == NULL) {
+		ret = -ENXIO;
+		goto exit;
+	}
 
 	i_rpc = (struct rpc_audio_mute_info *)rpc_info->vaddr;
 	offset = ALIGN(sizeof(struct rpc_audio_mute_info), 128);
@@ -1865,23 +2153,32 @@ int rpc_set_cvbs_auto_detection(struct rtk_rpc_info *rpc_info,
 	struct rpc_privateinfo_param *i_rpc;
 	struct rpc_privateinfo_returnval *o_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	i_rpc = (struct rpc_privateinfo_param *)rpc_info->vaddr;
-	offset = ALIGN(sizeof(struct rpc_privateinfo_param), 128);
+	offset = ALIGN(sizeof(struct rpc_privateinfo_param), RPC_ALIGN_SZ);
 	o_rpc = (struct rpc_privateinfo_returnval *)((unsigned long)i_rpc + offset);
 
 	memset_io(i_rpc, 0, sizeof(*i_rpc));
 
-	i_rpc->instanceId = htonl(0);
-	i_rpc->type = htonl(ENUM_PRIVATEINFO_VO_CVBS_PLUG_DETECTION_ENABLE);
-	i_rpc->privateInfo[0] = htonl(enable);
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	ret = send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
+	if (rpc_info->vo_in_hifi) {
+		i_rpc->instanceId = 0;
+		i_rpc->type = ENUM_PRIVATEINFO_VO_CVBS_PLUG_DETECTION_ENABLE;
+		i_rpc->privateInfo[0] = enable;
+	} else {
+		i_rpc->instanceId = htonl(0);
+		i_rpc->type = htonl(ENUM_PRIVATEINFO_VO_CVBS_PLUG_DETECTION_ENABLE);
+		i_rpc->privateInfo[0] = htonl(enable);
+	}
+
+	ret = send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret);
 
@@ -1896,28 +2193,40 @@ int rpc_get_cvbs_format(struct rtk_rpc_info *rpc_info,
 	struct rpc_privateinfo_param *i_rpc;
 	struct rpc_privateinfo_returnval *o_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	i_rpc = (struct rpc_privateinfo_param *)rpc_info->vaddr;
-	offset = ALIGN(sizeof(struct rpc_privateinfo_param), 128);
+	offset = ALIGN(sizeof(struct rpc_privateinfo_param), RPC_ALIGN_SZ);
 	o_rpc = (struct rpc_privateinfo_returnval *)((unsigned long)i_rpc + offset);
 
 	memset_io(i_rpc, 0, sizeof(*i_rpc));
 
-	i_rpc->instanceId = htonl(0);
-	i_rpc->type = htonl(ENUM_PRIVATEINFO_VIDEO_GET_CVBS_FORMAT);
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	ret = send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
+	if (rpc_info->vo_in_hifi) {
+		i_rpc->instanceId = 0;
+		i_rpc->type = ENUM_PRIVATEINFO_VIDEO_GET_CVBS_FORMAT;
+	} else {
+		i_rpc->instanceId = htonl(0);
+		i_rpc->type = htonl(ENUM_PRIVATEINFO_VIDEO_GET_CVBS_FORMAT);
+	}
+
+	ret = send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret);
+
 	if (ret)
 		goto exit;
 
-	*p_cvbs_fmt = htonl(o_rpc->privateInfo[0]);
+	if (rpc_info->vo_in_hifi)
+		*p_cvbs_fmt = o_rpc->privateInfo[0];
+	else
+		*p_cvbs_fmt = htonl(o_rpc->privateInfo[0]);
 
 exit:
 	mutex_unlock(&rpc_info->lock);
@@ -1929,22 +2238,31 @@ int rpc_set_cvbs_format(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_privateinfo_param *i_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	i_rpc = (struct rpc_privateinfo_param *)rpc_info->vaddr;
-	offset = ALIGN(sizeof(struct rpc_privateinfo_param), 128);
+	offset = ALIGN(sizeof(struct rpc_privateinfo_param), RPC_ALIGN_SZ);
 
 	memset_io(i_rpc, 0, sizeof(*i_rpc));
 
-	i_rpc->instanceId = htonl(0);
-	i_rpc->type = htonl(ENUM_PRIVATEINFO_VIDEO_SET_CVBS_FORMAT);
-	i_rpc->privateInfo[0] = htonl(cvbs_fmt);
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	ret = send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
+	if (rpc_info->vo_in_hifi) {
+		i_rpc->instanceId = 0;
+		i_rpc->type = ENUM_PRIVATEINFO_VIDEO_SET_CVBS_FORMAT;
+		i_rpc->privateInfo[0] = cvbs_fmt;
+	} else {
+		i_rpc->instanceId = htonl(0);
+		i_rpc->type = htonl(ENUM_PRIVATEINFO_VIDEO_SET_CVBS_FORMAT);
+		i_rpc->privateInfo[0] = htonl(cvbs_fmt);
+	}
+
+	ret = send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret);
 
@@ -1958,7 +2276,7 @@ int rpc_set_mixer_order(struct rtk_rpc_info *rpc_info,
 {
 	struct rpc_disp_mixer_order *rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret = 0;
 
 	mutex_lock(&rpc_info->lock);
@@ -1996,7 +2314,7 @@ int rpc_get_mixer_order(struct rtk_rpc_info *rpc_info,
 	struct rpc_disp_mixer_order *i_rpc;
 	struct rpc_disp_mixer_order *o_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret = 0;
 
 	mutex_lock(&rpc_info->lock);
@@ -2043,29 +2361,40 @@ int rpc_get_cvbs_connection_status(struct rtk_rpc_info *rpc_info,
 	struct rpc_privateinfo_param *i_rpc;
 	struct rpc_privateinfo_returnval *o_rpc;
 	unsigned int offset;
-	unsigned int rpc_ret;
+	unsigned int rpc_ret = 0;
 	int ret;
+
+	int opt;
 
 	mutex_lock(&rpc_info->lock);
 
 	i_rpc = (struct rpc_privateinfo_param *)rpc_info->vaddr;
-	offset = ALIGN(sizeof(struct rpc_privateinfo_param), 128);
+	offset = ALIGN(sizeof(struct rpc_privateinfo_param), RPC_ALIGN_SZ);
 	o_rpc = (struct rpc_privateinfo_returnval *)((unsigned long)i_rpc + offset);
 
 	memset_io(i_rpc, 0, sizeof(*i_rpc));
 
-	i_rpc->instanceId = htonl(0);
-	i_rpc->type = htonl(ENUM_PRIVATEINFO_VIDEO_GET_CVBS_STATUS);
+	opt = (rpc_info->vo_in_hifi ? RPC_HIFI : RPC_AUDIO);
 
-	ret = send_rpc(rpc_info, RPC_AUDIO,
-			ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
+	if (rpc_info->vo_in_hifi) {
+		i_rpc->instanceId = 0;
+		i_rpc->type = ENUM_PRIVATEINFO_VIDEO_GET_CVBS_STATUS;
+	} else {
+		i_rpc->instanceId = htonl(0);
+		i_rpc->type = htonl(ENUM_PRIVATEINFO_VIDEO_GET_CVBS_STATUS);
+	}
+
+	ret = send_rpc(rpc_info, opt, ENUM_VIDEO_KERNEL_RPC_PRIVATEINFO,
 			rpc_info->paddr, rpc_info->paddr + offset,
 			&rpc_ret);
 
 	if (ret)
 		goto exit;
 
-	*status = htonl(o_rpc->privateInfo[0]);
+	if (rpc_info->vo_in_hifi)
+		*status = o_rpc->privateInfo[0];
+	else
+		*status = htonl(o_rpc->privateInfo[0]);
 
 exit:
 	mutex_unlock(&rpc_info->lock);
@@ -2075,9 +2404,86 @@ exit:
 
 int rtk_rpc_init(struct device *dev, struct rtk_rpc_info *rpc_info)
 {
+	struct device_node *syscon_np;
 	struct rtk_ipc_shm __iomem *ipc = (void __iomem *)IPC_SHM_VIRT;
+	int ret = -1;
+	int lock_id;
 
-	rpc_info->vo_sync_flag = &ipc->vo_int_sync;
+	rpc_info->dev = dev;
+	mutex_init(&rpc_info->lock);
+
+	DRM_DEBUG_DRIVER("[rtk_rpc_init]\n");
+
+	syscon_np = of_parse_phandle(dev->of_node, "syscon", 0);
+	if (IS_ERR_OR_NULL(syscon_np)) {
+		dev_err(dev, "can't find syscon for display subsystem\n");
+		return -ENODEV;
+	} else {
+		rpc_info->acpu_int_base = syscon_node_to_regmap(syscon_np);
+	}
+
+	lock_id = of_hwspin_lock_get_id(dev->of_node, 0);
+	if (lock_id > 0 || (IS_ENABLED(CONFIG_HWSPINLOCK) && lock_id == 0)) {
+		struct hwspinlock *lock = devm_hwspin_lock_request_specific(dev, lock_id);
+
+		if (lock) {
+			dev_info(dev, "use hwlock%d\n", lock_id);
+			rpc_info->hwlock = lock;
+		}
+	} else {
+		if (lock_id != -ENOENT)
+			dev_err(dev, "failed to get hwlock: %pe\n", ERR_PTR(lock_id));
+	}
+
+	if (IS_ENABLED(CONFIG_RPMSG_RTK_RPC)) {
+		rpc_info->acpu_ept_info = of_krpc_ept_info_get(dev->of_node, 0);
+		if (IS_ERR(rpc_info->acpu_ept_info)) {
+			ret = PTR_ERR(rpc_info->acpu_ept_info);
+			if (ret == -EPROBE_DEFER) {
+				dev_err(dev, "acpu krpc ept info not ready, retry\n");
+				return ret;
+			}
+			dev_dbg(dev, "can't find acpu krpc ept info: %d\n", ret);
+			rpc_info->acpu_ept_info = NULL;
+		}
+
+		rpc_info->hifi_ept_info = of_krpc_ept_info_get(dev->of_node, 1);
+		if (IS_ERR(rpc_info->hifi_ept_info)) {
+			ret = PTR_ERR(rpc_info->hifi_ept_info);
+			if (ret == -EPROBE_DEFER) {
+				dev_err(dev, "hifi krpc ept info not ready, retry\n");
+				return ret;
+			}
+
+			dev_dbg(dev, "can't find hifi krpc ept info: %d\n", ret);
+			rpc_info->hifi_ept_info = NULL;
+		}
+
+		if (rpc_info->acpu_ept_info == NULL && rpc_info->hifi_ept_info == NULL) {
+			dev_err(dev, "failed to get any krpc ept info.\n");
+			return -ENODEV;
+		}
+
+		if (rpc_info->hifi_ept_info) {
+			drm_ept_init(rpc_info->hifi_ept_info);
+			rpc_info->vo_in_hifi = 1;
+		}
+
+		if (rpc_info->acpu_ept_info) {
+			drm_ept_init(rpc_info->acpu_ept_info);
+			rpc_info->vo_in_hifi = 0;
+		}
+	}
+
+	if (rpc_info->vo_in_hifi)
+		rpc_info->vo_sync_flag = ioremap(0x9810060c, 0x1);
+	else
+		rpc_info->vo_sync_flag = (void __iomem *)&ipc->vo_int_sync;
+
+	set_dma_ops(dev, &rheap_dma_ops);
+	rheap_setup_dma_pools(dev, "rtk_audio_heap",
+			RTK_FLAG_NONCACHED | RTK_FLAG_SCPUACC |
+			 RTK_FLAG_ACPUACC, __func__);
 
 	dev->coherent_dma_mask = DMA_BIT_MASK(32);
 	dev->dma_mask = (u64 *)&dev->coherent_dma_mask;
@@ -2088,43 +2494,6 @@ int rtk_rpc_init(struct device *dev, struct rtk_rpc_info *rpc_info)
 	if (!rpc_info->vaddr) {
 		pr_err("%s failed to allocate rpc buffer\n", __func__);
 		return -1;
-	}
-	rpc_info ->dev = dev;
-
-	mutex_init(&rpc_info->lock);
-	if (IS_ENABLED(CONFIG_RPMSG_RTK_RPC)) {
-		int ret = -1;
-
-		rpc_info->acpu_ept_info = of_krpc_ept_info_get(dev->of_node, 0);
-		if (IS_ERR(rpc_info->acpu_ept_info)) {
-			ret = PTR_ERR(rpc_info->acpu_ept_info);
-			if (ret == -EPROBE_DEFER) {
-				dev_dbg(dev, "acpu krpc ept info not ready, retry\n");
-				return ret;
-			} else {
-				dev_err(dev, "failed to get krpc ept info: %d\n", ret);
-				return ret;
-			}
-		}
-
-		rpc_info->hifi_ept_info = of_krpc_ept_info_get(dev->of_node, 1);
-		if (IS_ERR(rpc_info->hifi_ept_info)) {
-			ret = PTR_ERR(rpc_info->hifi_ept_info);
-			if (ret == -EPROBE_DEFER) {
-				dev_dbg(dev, "hifi krpc ept info not ready, retry\n");
-				if (!IS_ERR_OR_NULL(rpc_info->acpu_ept_info))
-					krpc_ept_info_put(rpc_info->acpu_ept_info);
-				return ret;
-			} else {
-				dev_err(dev, "failed to get krpc hifi ept info, 0x%p\n", rpc_info->hifi_ept_info);
-			}
-		}
-
-		if (!IS_ERR(rpc_info->acpu_ept_info))
-			drm_ept_init(rpc_info->acpu_ept_info);
-
-		if (!IS_ERR(rpc_info->hifi_ept_info))
-			drm_ept_init(rpc_info->hifi_ept_info);
 	}
 
 #if IS_ENABLED(CONFIG_KERN_RPC_HANDLE_COMMAND)

@@ -14,6 +14,10 @@
 #define S_OK 0x10000000
 
 #define RPC_CMD_BUFFER_SIZE 4096
+#define VO_DC_SET_NOTIFY (1U << 8)
+#define VO_DC_FEEDBACK_NOTIFY (1U << 9)
+#define ACPU_INT_SA (1U << 1)
+#define ACPU_INT_WRITE (1U << 0)
 #define DC_VO_SET_NOTIFY 	(1U << 0)
 #define DC_VO_FEEDBACK_NOTIFY	(__cpu_to_be32(1U << 1))
 #define DC_HAS_BIT(addr, bit)           (readl(addr) & bit)
@@ -235,7 +239,7 @@ enum INBAND_CMD_TYPE {
 	VIDEO_DIVX3_INBAND_CMD_TYPE_RESOLUTION,
 
 	/*MPEG4 DivX4 detected In-band command*/
-	VIDEO_MPEG4_INBAND_CMD_TYPE_MP4,
+	VIDEO_MPEG4_INBAND_CMD_TYPE_DIVX4,
 	/* Audio In-band Commands Start Here */
 
 	/* DV In-band Commands */
@@ -765,11 +769,13 @@ struct graphic_object {
 	unsigned int afbc_yuv_transform;
 };
 
-struct rpc_create_video_agent {
-	unsigned int instance;
+struct rpc_result {
 	unsigned int result;
 	unsigned int data;
-	unsigned int ret;
+};
+
+struct rpc_create_video_agent {
+	unsigned int instance;
 };
 
 struct rpc_vo_filter_display {
@@ -777,16 +783,6 @@ struct rpc_vo_filter_display {
 	enum VO_VIDEO_PLANE videoPlane;
 	unsigned char zeroBuffer;
 	unsigned char realTimeSrc;
-};
-
-struct rpc_vo_filter_display_t {
-	unsigned int instance;
-	enum VO_VIDEO_PLANE videoPlane;
-	unsigned char zeroBuffer;
-	unsigned char realTimeSrc;
-	unsigned int result;
-	unsigned int data;
-	unsigned int ret;
 };
 
 struct VO_SIZE {
@@ -892,17 +888,6 @@ struct rpc_config_disp_win {
 	unsigned char enBorder;
 };
 
-struct rpc_config_disp_win_t {
-	enum VO_VIDEO_PLANE videoPlane;
-	struct vo_rectangle videoWin;
-	struct vo_rectangle borderWin;
-	struct vo_color borderColor;
-	unsigned char enBorder;
-	unsigned int result;
-	unsigned int data;
-	unsigned int ret;
-};
-
 struct rpc_query_disp_win_in {
 	enum VO_VIDEO_PLANE plane;
 };
@@ -935,27 +920,9 @@ struct rpc_config_graphic_canvas {
 	unsigned char go;
 };
 
-struct rpc_config_graphic_canvas_t{
-	enum VO_GRAPHIC_PLANE plane;
-	struct vo_rectangle srcWin;
-	struct vo_rectangle dispWin;
-	unsigned char go;
-	unsigned int result;
-	unsigned int data;
-	unsigned int ret;
-};
-
 struct rpc_refclock {
 	int instance;
 	int pRefClock;
-};
-
-struct rpc_refclock_t {
-	int instance;
-	int pRefClock;
-	unsigned int result;
-	unsigned int data;
-	unsigned int ret;
 };
 
 struct rpc_ringbuffer {
@@ -963,23 +930,6 @@ struct rpc_ringbuffer {
 	unsigned int pinID;
 	unsigned int readPtrIndex;
 	unsigned int pRINGBUFF_HEADER;
-};
-
-struct rpc_ringbuffer_t {
-	unsigned int result;
-	unsigned int data;
-	unsigned int ret;
-	unsigned int instance;
-	unsigned int pinID;
-	unsigned int readPtrIndex;
-	unsigned int pRINGBUFF_HEADER;
-};
-
-struct rpc_video_run_t {
-	unsigned int instance;
-	unsigned int result;
-	unsigned int data;
-	unsigned int ret;
 };
 
 struct rpc_config_video_standard {
@@ -1122,7 +1072,9 @@ struct rpc_query_disp_win_out_new {
 	unsigned int wb_usedFormat;
 	unsigned int channel_total_drop_rpc;
 	unsigned int channel_total_drop_rpc_anycase;
-	long reserved3[5];
+	unsigned int is_swmixer_on;
+	unsigned int is_on_mixer;
+	unsigned int reserved3[3];
 };
 
 struct rpc_set_speed {
@@ -1775,11 +1727,14 @@ typedef struct RPC_STRUCT {
 #endif
 struct rtk_rpc_info {
 	struct device *dev;
-	volatile void *vo_sync_flag;
+	void *vo_sync_flag;
+	struct regmap *acpu_int_base;
+	struct hwspinlock *hwlock;
 	struct rtk_krpc_ept_info *acpu_ept_info;
 	struct rtk_krpc_ept_info *hifi_ept_info;
 	uint32_t *hdmi_new_mac;
 	uint32_t *ao_in_hifi; /* Is audio output in HiFi */
+	uint32_t vo_in_hifi;
 #ifdef DMABUF_HEAPS_RTK
 	struct dma_buf *dmabuf;
 	struct dma_buf_attachment *attach;
@@ -1793,8 +1748,9 @@ struct rtk_rpc_info {
 	struct mutex lock;
 };
 
-unsigned int ipcReadULONG(u8 *src);
-void ipcCopyMemory(void *p_des, void *p_src, unsigned long len);
+unsigned int ipcReadULONG(u8 *src, unsigned int type);
+void ipcCopyMemory(void *p_des, void *p_src, unsigned long len, unsigned int type);
+void rpc_send_interrupt(struct rtk_rpc_info *rpc_info);
 
 int rtk_rpc_init(struct device *dev, struct rtk_rpc_info *rpc_info);
 int rpc_create_video_agent(struct rtk_rpc_info *rpc_info, unsigned int *videoId,
