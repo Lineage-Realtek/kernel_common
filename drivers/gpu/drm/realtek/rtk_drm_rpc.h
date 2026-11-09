@@ -747,6 +747,17 @@ struct inband_cmd_pkg_header {
 	unsigned int size;
 };
 
+enum encoding_mode {
+	MODE_LINEAR = 0,
+	MODE_AFBC = 1,
+	MODE_AFRC = 2,
+};
+
+enum afrc_stride_en {
+	STRIDE_HW_PITCH = 0,
+	STRIDE_USER_PITCH = 1,
+};
+
 struct graphic_object {
 	struct inband_cmd_pkg_header header;
 	enum INBAND_CMD_GRAPHIC_FORMAT format;
@@ -764,9 +775,9 @@ struct graphic_object {
 	unsigned int address_right;
 	unsigned int pitch_right;
 	enum INBAND_CMD_GRAPHIC_3D_MODE picLayout;
-	unsigned int afbc;
-	unsigned int afbc_block_split;
-	unsigned int afbc_yuv_transform;
+	unsigned int mode;
+	unsigned int ext1;
+	unsigned int ext2;
 };
 
 struct rpc_result {

@@ -13,6 +13,7 @@
  */
 
 #include <linux/kthread.h>
+#include <drm/drm_print.h>
 #include <drm/drm_file.h>
 #include <drm/drm_plane.h>
 #include <drm/drm_crtc.h>
@@ -21,54 +22,135 @@
 #include "rtk_drm_drv.h"
 #include "rtk_drm_crtc.h"
 
-static int thread_plock(void *data)
+static const char *rtk_drm_fence_get_driver_name(struct dma_fence *fence)
 {
-	struct rtk_drm_fence *rtk_fence = (struct rtk_drm_fence *)data;
-	int checkIdx = 0;
+	return "rtk_plane_outfence";
+}
 
-	while(1) {
-		int ret, i, idx;
-		int tmpIdx = -1;
-		volatile unsigned char pReceived;
-		volatile unsigned char pLock;
-		unsigned char plockSt;
+static const char *rtk_drm_fence_get_timeline_name(struct dma_fence *fence)
+{
+	return "rtk_plane_timeline";
+}
 
-		ret = wait_event_interruptible_timeout(rtk_fence->plock_waitq, kthread_should_stop(), msecs_to_jiffies(rtk_fence->thread_plock_interval));
+static const struct dma_fence_ops rtk_drm_fence_ops = {
+	.get_driver_name = rtk_drm_fence_get_driver_name,
+	.get_timeline_name = rtk_drm_fence_get_timeline_name,
+};
 
-		if (kthread_should_stop() || (ret == -ERESTART)) {
-			return 1;
+static void fence_signal_worker(struct drm_flip_work *work, void *val)
+{
+	struct rtk_dma_fence *fence = val;
+
+	DRM_DEBUG_DRIVER("signal out-fence[%d] : (%p) (%p)\n", fence->idx, fence , fence->fence);
+
+	dma_fence_signal(fence->fence);
+	dma_fence_put(fence->fence);
+
+	kfree(fence);
+}
+
+int rtk_drm_fence_update(struct rtk_drm_plane *rtk_plane)
+{
+	struct rtk_drm_fence *rtk_fence = rtk_plane->rtk_fence;
+	struct drm_flip_work *work = &rtk_fence->fence_signal_work;
+	struct drm_flip_task *task, *tmp;
+	struct rtk_dma_fence *fence;
+	struct list_head tasks;
+	struct list_head release_tasks;
+	unsigned long flags;
+
+	INIT_LIST_HEAD(&tasks);
+	INIT_LIST_HEAD(&release_tasks);
+
+	if (list_empty(&work->queued) && list_empty(&rtk_fence->pending)) {
+		DRM_DEBUG_DRIVER("videoplane %d 's fence (%p) no flip work queued !\n",
+			rtk_plane->layer_nr, rtk_plane->rtk_fence);
+		return 0;
+	}
+
+	if (!list_empty(&rtk_fence->pending))
+		list_splice_tail(&rtk_fence->pending, &tasks);
+	INIT_LIST_HEAD(&rtk_fence->pending);
+
+	spin_lock_irqsave(&work->lock, flags);
+	list_splice_tail(&work->queued, &tasks);
+	INIT_LIST_HEAD(&work->queued);
+	spin_unlock_irqrestore(&work->lock, flags);
+
+	DRM_DEBUG_DRIVER("release target : %d\n", rtk_plane->context);
+	/* NOTE: other indices stay on the local tasks list and leak, as on the device. */
+	list_for_each_entry_safe(task, tmp, &tasks, node) {
+		fence = task->data;
+
+		spin_lock_irqsave(&rtk_fence->idx_lock, flags);
+
+		if (rtk_plane->context == fence->idx) {
+			/**
+			 * pending fence (current)
+			 */
+			DRM_DEBUG_DRIVER("pending fence : %d\n", fence->idx);
+			list_move_tail(&task->node, &rtk_fence->pending);
+		} else if (((fence->idx + 1) % CONTEXT_SIZE) == rtk_plane->context) {
+			/**
+			 * release fence (previous)
+			 */
+			DRM_DEBUG_DRIVER("release fence : %d\n", fence->idx);
+			list_move_tail(&task->node, &release_tasks);
 		}
+		spin_unlock_irqrestore(&rtk_fence->idx_lock, flags);
+	}
 
-		for(i=0;i<PLOCK_BUFFER_SET_SIZE;i++) {
-			idx = checkIdx + i;
-			if(idx >= PLOCK_BUFFER_SET_SIZE)
-				idx = idx - PLOCK_BUFFER_SET_SIZE;
+#if 0 // TODO: For reference of overlay plane later
+	list_for_each_entry_safe(task, tmp, &tasks, node) {
+		fence = task->data;
 
-			mutex_lock(&rtk_fence->idx_lock);
-			pReceived = *(volatile unsigned char*)(rtk_fence->pReceived_viraddr + idx);
-			pLock = *(volatile unsigned char*)(rtk_fence->pLock_viraddr + idx);
+		spin_lock_irqsave(&rtk_fence->idx_lock, flags);
 
-			if (pLock > 0) {
-				plockSt = PLOCK_STATUS_LOCK;
-			} else if (pLock == 0) {
-				switch (pReceived) {
-				case PLOCK_INIT:
-					plockSt = PLOCK_STATUS_INIT;
-					break;
-				case PLOCK_QPEND:
-					plockSt = PLOCK_STATUS_QPEND;
-					break;
-				case PLOCK_RECEIVED:
-					plockSt = PLOCK_STATUS_UNLOCK;
-					break;
-				default:
-					pr_err("err, %d\n", idx);
-					plockSt = PLOCK_STATUS_ERR;
-					break;
-				}
+		pRcv = *(volatile unsigned char*)(rtk_fence->rcv_vaddr + fence->idx);
+		pLock = *(volatile unsigned char*)(rtk_fence->lock_vaddr + fence->idx);
+
+		DRM_DEBUG_DRIVER("pRcv : 0x%x, pLock : 0x%x\n", pRcv, pLock);
+
+		if (!(pLock == 0 && pRcv == PLOCK_RECEIVED)) {
+
+			DRM_DEBUG_DRIVER("fence[%d] : %p not ready, status: (0x%x)\n", fence->idx, fence, pRcv);
+
+			if (pRcv == PLOCK_INIT) {
+				/* drop fence */
+				list_move_tail(&task->node, &rtk_fence->drop_list);
+			} else {
+				/* pending fence */
+				list_move_tail(&task->node, &rtk_fence->pending);
 			}
 			if (plockSt == PLOCK_STATUS_UNLOCK) {
 				*(volatile unsigned char*)(rtk_fence->pReceived_viraddr + idx) = PLOCK_INIT;
+		} else {
+			drop_task = list_first_entry_or_null(&rtk_fence->drop_list, struct drm_flip_task, node);
+			if (drop_task) {
+				drop_fence = drop_task->data;
+
+				DRM_DEBUG_DRIVER("has drop fence[%d] : %p and ready fence[%d] : %p commited\n",
+					drop_fence->idx, drop_fence, fence->idx, fence);
+
+				if (fence->idx < drop_fence->idx) {
+					if (drop_fence->idx == (PLOCK_BUFFER_SET_SIZE - 1) && fence->idx == 0) {
+						list_move_tail(&drop_task->node, &release_tasks);
+						list_move_tail(&task->node, &release_tasks);
+					} else {
+						list_move_tail(&task->node, &release_tasks);
+					}
+				} else if (fence->idx > drop_fence->idx) {
+					if (drop_fence->idx == 0 && fence->idx == (PLOCK_BUFFER_SET_SIZE - 1)) {
+						list_move_tail(&task->node, &release_tasks);
+					} else {
+						list_move_tail(&drop_task->node, &release_tasks);
+						list_move_tail(&task->node, &release_tasks);
+					}
+				}
+			} else {
+				DRM_DEBUG_DRIVER("has ready fence[%d] : %p commited\n", fence->idx, fence);
+				list_move_tail(&task->node, &release_tasks);
+				*(volatile unsigned char*)(rtk_fence->rcv_vaddr + fence->idx) = PLOCK_INIT;
 				dsb(sy);
 				rtk_fence->index[idx] = BUF_ST_UNLOCK;
 				tmpIdx = idx;
@@ -81,152 +163,111 @@ static int thread_plock(void *data)
 			checkIdx = tmpIdx;
 			checkIdx++;
 		}
+		spin_unlock_irqrestore(&rtk_fence->idx_lock, flags);
 	}
+#endif // DRM_PLANE_TYPE_OVERLAY
 
-	return  0;
+	spin_lock_irqsave(&work->lock, flags);
+	list_splice_tail(&release_tasks, &work->commited);
+	spin_unlock_irqrestore(&work->lock, flags);
+
+	queue_work(system_unbound_wq, &work->worker);
+
+	return 0;
 }
 
-int rtk_fence_uninit(struct rtk_drm_plane *rtk_plane)
+int rtk_drm_fence_create(struct rtk_drm_fence *rtk_fence, s32 __user *out_fence_ptr)
 {
-	struct rtk_drm_fence *rtk_fence = rtk_plane->rtk_fence;
-	struct drm_device *drm = rtk_plane->plane.dev;
+	struct rtk_dma_fence *fence;
+	int ret = 0;
+	int retval = 0;
 
-	kthread_stop(rtk_fence->thread_plock);
+	DRM_DEBUG_DRIVER("%d\n", __LINE__);
 
-	mutex_destroy(&rtk_fence->idx_lock);
-
-	dma_free_coherent(drm->dev, SZ_1K, rtk_fence->pLock_viraddr,
-			 rtk_fence->pLock_paddr);
-	kfree(rtk_fence);
-
-	return  0;
-}
-
-int rtk_fence_init(struct rtk_drm_plane *rtk_plane)
-{
-	struct rtk_drm_fence *rtk_fence;
-	struct drm_device *drm = rtk_plane->plane.dev;
-	void *vaddr;
-	dma_addr_t paddr;
-	int i=0;
-
-	rtk_fence = kzalloc(sizeof(*rtk_fence), GFP_KERNEL);
-
-	rtk_plane->rtk_fence = rtk_fence;
-
-	rheap_setup_dma_pools(drm->dev, NULL, AUDIO_RTK_FLAG, __func__);
-	vaddr = dma_alloc_coherent(drm->dev, SZ_1K, &paddr, GFP_KERNEL);
-	if (!vaddr) {
-		dev_err(drm->dev, "%s dma_alloc fail \n", __func__);
+	fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+	if (!fence) {
+		DRM_ERROR("rtk_dma_fence alloc fail\n");
 		return -ENOMEM;
 	}
 
+	fence->fence = kzalloc(sizeof(struct dma_fence), GFP_KERNEL);
+	if (!fence->fence) {
+		DRM_ERROR("dma_fence alloc fail\n");
+		ret = -ENOMEM;
+		goto create_error;
+	}
 
-	rtk_fence->pLock_viraddr = (unsigned char *)(vaddr);
-	rtk_fence->pLock_paddr = paddr;
-	rtk_fence->pReceived_viraddr = rtk_fence->pLock_viraddr + PLOCK_MAX_BUFFER_INDEX;
-	rtk_fence->pReceived_paddr = rtk_fence->pLock_paddr + PLOCK_MAX_BUFFER_INDEX;
+	dma_fence_init(fence->fence, &rtk_drm_fence_ops, &rtk_fence->fence_lock, 0, 0);
 
-	memset(rtk_fence->pLock_viraddr, 0, PLOCK_MAX_BUFFER_INDEX);
-	memset(rtk_fence->pReceived_viraddr, PLOCK_INIT, PLOCK_MAX_BUFFER_INDEX);
+	fence->fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fence->fd < 0) {
+		DRM_ERROR("rtk_dma_fence get unused fd fail\n");
+		ret = fence->fd;
+		goto create_error;
+	}
 
-	rtk_fence->thread_plock_interval = 1;
-	init_waitqueue_head(&rtk_fence->plock_waitq);
-	mutex_init(&rtk_fence->idx_lock);
-	for(i=0;i<PLOCK_MAX_BUFFER_INDEX;i++)
-		rtk_fence->index[i] = BUF_ST_UNLOCK;
-	rtk_fence->thread_plock = kthread_run(thread_plock, rtk_fence, "plockthread");
-	rtk_fence->usePlock = 0;
-	rtk_fence->next_disp_idx = 0;
+	retval = put_user(fence->fd, out_fence_ptr);
+	if (retval) {
+		DRM_ERROR("fence fd put to user fail %d\n", retval);
+		ret = -EFAULT;
+		goto create_error;
+	}
+
+	fence->sync_file = sync_file_create(fence->fence);
+	if (!fence->sync_file) {
+		DRM_ERROR("sync_file create fail\n");
+		ret = -ENOMEM;
+		goto create_error;
+	}
+
+	fence->idx = rtk_fence->idx;
+
+	fd_install(fence->fd, fence->sync_file->file);
+	drm_flip_work_queue(&rtk_fence->fence_signal_work, fence);
+
+	DRM_DEBUG_DRIVER("create and install out-fence[%d] : (%p) (%p)\n", fence->idx, fence , fence->fence);
 
 	return 0;
-}
 
-int rtk_fence_set_buf_st(struct rtk_drm_fence *rtk_fence, uint32_t idx, unsigned char st)
-{
-	int ret = 0;
-
-	mutex_lock(&rtk_fence->idx_lock);
-	switch(st) {
-	 	case PLOCK_STATUS_INIT:
-		 	*(volatile unsigned char*)(rtk_fence->pReceived_viraddr + idx) = PLOCK_INIT;
-		 	dsb(sy);
-		 	break;
-		case PLOCK_STATUS_QPEND:
-		 	*(volatile unsigned char*)(rtk_fence->pReceived_viraddr + idx) = PLOCK_QPEND;
-		 	dsb(sy);
-			break;
-		default:
-			pr_err("Incorrect buffer state setting value\n");
-			ret = -EINVAL;
-			break;
-	}
-	mutex_unlock(&rtk_fence->idx_lock);
+create_error: /* NOTE: the device leaks the dma_fence and reserved fd on failure. */
+	kfree(fence);
 	return ret;
 }
 
-int rtk_fence_get_unlock_buf_ioctl(struct drm_device *dev,
-			    void *data, struct drm_file *file)
+int rtk_drm_fence_uninit(struct rtk_drm_plane *rtk_plane)
 {
-	struct drm_rtk_buf_st *buf_st = (struct drm_rtk_buf_st *)data;
-	struct drm_plane *plane = drm_plane_find(dev, file, buf_st->plane_id);
-	struct rtk_drm_plane *rtk_plane =  container_of(plane, struct rtk_drm_plane, plane);
 	struct rtk_drm_fence *rtk_fence = rtk_plane->rtk_fence;
-	unsigned int next_idx;
-	int i;
-	int idx = -1;
 
-	if(plane->type != DRM_PLANE_TYPE_OVERLAY)
-		return -EINVAL;
+	DRM_INFO("%d\n", __LINE__);
 
-	mutex_lock(&rtk_fence->idx_lock);
-	next_idx = rtk_fence->next_disp_idx;
-	for(i=0;i<PLOCK_BUFFER_SET_SIZE;i++) {
-		if(i+next_idx < PLOCK_BUFFER_SET_SIZE) {
-			if(rtk_fence->index[i + next_idx] == BUF_ST_UNLOCK) {
-				idx = i + next_idx;
-				break;
-			}
-		}else{
-			if(rtk_fence->index[i + next_idx - PLOCK_BUFFER_SET_SIZE] == BUF_ST_UNLOCK) {
-				idx = i + next_idx - PLOCK_BUFFER_SET_SIZE;
-				break;
-			}
-		}
-	}
+	DRM_INFO("Uninit videoplane %d 's fence (%p)\n",
+		rtk_plane->layer_nr, rtk_plane->rtk_fence);
 
-	if(idx == -1) {
-		mutex_unlock(&rtk_fence->idx_lock);
-		pr_err("Can't find unlock buffer!!\n");
-		return -EINVAL;
-	}
-	buf_st->idx = idx;
-	buf_st->st = BUF_ST_LOCK;
-	rtk_fence->index[idx] = BUF_ST_LOCK;
-	rtk_fence->usePlock = 1;
-	rtk_fence->next_disp_idx = ((idx+1)<PLOCK_BUFFER_SET_SIZE)?(idx+1):0;
-	mutex_unlock(&rtk_fence->idx_lock);
+	kfree(rtk_fence); /* NOTE: the device does not drain outstanding flip work. */
 
-	return 0;
+	return  0;
 }
 
-
-int rtk_fence_get_buf_st_ioctl(struct drm_device *dev,
-			    void *data, struct drm_file *file)
+int rtk_drm_fence_init(struct rtk_drm_plane *rtk_plane)
 {
-	struct drm_rtk_buf_st *buf_st = (struct drm_rtk_buf_st *)data;
-	struct drm_plane *plane = drm_plane_find(dev, file, buf_st->plane_id);
-	struct rtk_drm_plane *rtk_plane =  container_of(plane, struct rtk_drm_plane, plane);
-	struct rtk_drm_fence *rtk_fence = rtk_plane->rtk_fence;
+	struct rtk_drm_fence *rtk_fence;
 
-	if(plane->type != DRM_PLANE_TYPE_OVERLAY)
-		return -EINVAL;
+	DRM_INFO("%d\n", __LINE__);
 
-	if(buf_st->idx > PLOCK_BUFFER_SET_SIZE )
-		return -EINVAL;
+	rtk_fence = kzalloc(sizeof(*rtk_fence), GFP_KERNEL);
 
-	mutex_lock(&rtk_fence->idx_lock);
-	buf_st->st = rtk_fence->index[buf_st->idx];
-	mutex_unlock(&rtk_fence->idx_lock);
+	/* NOTE: the device does not check this allocation before using it. */
+	rtk_plane->rtk_fence = rtk_fence;
+
+	DRM_INFO("Init videoplane %d 's fence (%p)\n",
+		rtk_plane->layer_nr, rtk_plane->rtk_fence);
+
+	spin_lock_init(&rtk_fence->fence_lock);
+	spin_lock_init(&rtk_fence->idx_lock);
+
+	drm_flip_work_init(&rtk_fence->fence_signal_work, "fence_signal",
+			   fence_signal_worker);
+	INIT_LIST_HEAD(&rtk_fence->pending);
+
 	return 0;
 }

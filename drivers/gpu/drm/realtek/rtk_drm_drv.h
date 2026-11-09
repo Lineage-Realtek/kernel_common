@@ -13,8 +13,6 @@
 #define RTK_GEM_INFO_MAX	128
 
 /* VO specific ioctl */
-#define RTK_GET_UNLOCK_BUF   0x0
-#define RTK_GET_BUF_ST   0x1
 #define RTK_EXPORT_REFCLOCK_FD   0x2
 #define RTK_SET_PAUSE   0x3
 #define RTK_GET_PLANE_ID   0x4
@@ -38,6 +36,7 @@
 #define RTK_IOCTL_RESERVED16 0x16 /* RESERVED */
 #define RTK_SET_SDRFLAG 0x17
 #define RTK_SET_FLUSH 0x18
+#define RTK_GET_MIXER_ID 0x30
 /* HDMI specific ioctl */
 #define RTK_SET_TV_SYSTEM 0x20
 #define RTK_GET_TV_SYSTEM 0x21
@@ -45,8 +44,6 @@
 #define RTK_GET_DISPOUT_FORMAT 0x23
 #define RTK_SET_HDMI_AUDIO_MUTE 0x24
 
-#define DRM_IOCTL_RTK_GET_UNLOCK_BUF     DRM_IOWR( DRM_COMMAND_BASE + RTK_GET_UNLOCK_BUF, struct drm_rtk_buf_st)
-#define DRM_IOCTL_RTK_GET_BUF_ST     DRM_IOWR( DRM_COMMAND_BASE + RTK_GET_BUF_ST, struct drm_rtk_buf_st)
 #define DRM_IOCTL_RTK_EXPORT_REFCLOCK_FD     DRM_IOWR( DRM_COMMAND_BASE + RTK_EXPORT_REFCLOCK_FD, struct drm_rtk_refclk)
 #define DRM_IOCTL_RTK_SET_PAUSE     DRM_IOWR( DRM_COMMAND_BASE + RTK_SET_PAUSE, struct drm_rtk_pause)
 #define DRM_IOCTL_RTK_GET_PLANE_ID     DRM_IOWR( DRM_COMMAND_BASE + RTK_GET_PLANE_ID, struct drm_rtk_vo_plane)
@@ -75,10 +72,11 @@
 #define DRM_IOCTL_RTK_GET_DISPOUT_FORMAT     DRM_IOWR( DRM_COMMAND_BASE + RTK_GET_DISPOUT_FORMAT, struct rpc_display_output_format)
 #define DRM_IOCTL_RTK_SET_HDMI_AUDIO_MUTE    DRM_IOWR( DRM_COMMAND_BASE + RTK_SET_HDMI_AUDIO_MUTE, struct rpc_audio_mute_info)
 
-struct drm_rtk_buf_st {
-	uint32_t plane_id;
-	uint32_t idx;
-	uint8_t st;
+#define DRM_IOCTL_RTK_GET_MIXER_ID DRM_IOWR(DRM_COMMAND_BASE + RTK_GET_MIXER_ID, struct drm_rtk_mixer_id)
+
+struct drm_rtk_mixer_id {
+	uint32_t crtc_id;
+	uint32_t mixer_id;
 };
 
 struct drm_rtk_refclk {

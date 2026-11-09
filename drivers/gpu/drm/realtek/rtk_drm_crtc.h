@@ -28,6 +28,7 @@ enum {
 struct crtc_plane_data {
 	enum VO_VIDEO_PLANE layer_nr;
 	enum drm_plane_type type;
+	int plane_order;
 };
 
 struct crtc_data {
@@ -46,10 +47,10 @@ struct rtk_drm_plane {
 	int handle;
 	struct dma_buf *dmabuf;
 	struct dma_buf_attachment *attach;
+	struct dma_buf *refclock_dmabuf;
 	struct dma_buf_attachment *refclock_attach;
 	struct dma_buf_map map;
 #endif
-	struct dma_buf *refclock_dmabuf;
 	struct rtk_rpc_info *rpc_info;
 	struct rpc_vo_filter_display info;
 	struct rpc_config_disp_win disp_win;
@@ -62,6 +63,7 @@ struct rtk_drm_plane {
 	unsigned int gAlpha; /* [0]:Pixel Alpha	[0x01 ~ 0xFF]:Global Alpha */
 
 	struct rtk_drm_fence *rtk_fence;
+	struct drm_property *out_fence_ptr;
 	struct drm_property *display_idx_prop;
 	struct drm_property *rtk_meta_data_prop;
 	struct drm_property *vo_plane_name_prop;
@@ -69,13 +71,16 @@ struct rtk_drm_plane {
 	enum VO_VIDEO_PLANE layer_nr;
 	unsigned int mixer;
 
-	unsigned int buflock_idx;
+	ktime_t update_time;
 
 	unsigned int context;
+	bool pending_planes;
+	ktime_t pending;
 };
 
 struct rtk_drm_crtc {
 	struct drm_crtc crtc;
+	struct device *dev;
 	struct drm_pending_vblank_event *event;
 
 	int plane_count;
@@ -84,9 +89,7 @@ struct rtk_drm_crtc {
 
 	struct rpc_disp_mixer_order mixer_order;
 
-	void *vo_vsync_flag; /* VSync enable and notify. */
 	unsigned int irq;
-	struct hwspinlock *hwlock;
 
 	enum VO_VIDEO_PLANE layer_nr[VO_VIDEO_PLANE_NONE];
 	struct drm_property *present_time_prop;
@@ -95,7 +98,8 @@ struct rtk_drm_crtc {
 	unsigned int mixer;
 
 	bool pending_needs_vblank;
-	void (*change_tv_system)(struct drm_crtc *crtc);
+	ktime_t begin;
+	ktime_t completed;
 };
 
 struct rtk_crtc_state {
@@ -108,6 +112,5 @@ int rtk_plane_init(struct drm_device *drm, struct rtk_drm_plane *rtk_plane,
 bool rtk_plane_check_update_done(struct rtk_drm_plane *rtk_plane);
 extern void rtk_plane_destroy(struct drm_plane *plane);
 extern void rtk_crtc_finish_page_flip(struct drm_crtc *crtc);
-extern int rtk_fence_init(struct rtk_drm_plane *rtk_plane);
-extern int rtk_fence_uninit(struct rtk_drm_plane *rtk_plane);
+int rtk_crtc_ioctl_get_mixer_id(struct drm_device *dev, void *data, struct drm_file *file);
 #endif  /* _RTK_DRM_CRTC_H_ */

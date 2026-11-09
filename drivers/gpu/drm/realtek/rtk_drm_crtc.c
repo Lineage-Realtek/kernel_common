@@ -32,23 +32,46 @@
 #define to_rtk_crtc_state(s) container_of(s, struct rtk_crtc_state, base)
 
 static const struct crtc_plane_data rtd_crtc_plane_main[] = {
-	{ .layer_nr = VO_VIDEO_PLANE_OSD1,
-	  .type = DRM_PLANE_TYPE_PRIMARY },
-	{ .layer_nr = VO_VIDEO_PLANE_V1,
-	  .type = DRM_PLANE_TYPE_OVERLAY },
+	{
+		.layer_nr = VO_VIDEO_PLANE_OSD1,
+		.type = DRM_PLANE_TYPE_PRIMARY,
+		.plane_order = 2,
+	},
 };
 
-static const struct crtc_plane_data rtd_crtc_plane_second[] = {
-	{ .layer_nr = VO_VIDEO_PLANE_SUB1,
-	  .type = DRM_PLANE_TYPE_PRIMARY },
-	{ .layer_nr = VO_VIDEO_PLANE_V2,
-	  .type = DRM_PLANE_TYPE_OVERLAY },
+
+static const struct crtc_plane_data rtd_crtc_plane_ext[] = {
+	{
+		.layer_nr = VO_VIDEO_PLANE_SUB1,
+		.type = DRM_PLANE_TYPE_PRIMARY,
+		.plane_order = 2,
+	},
 };
 
-static const struct crtc_plane_data rtd_crtc_plane_extend[] = {
-	{ .layer_nr = VO_VIDEO_PLANE_OSD2,
-	  .type = DRM_PLANE_TYPE_PRIMARY },
+
+static const struct crtc_plane_data rtd_crtc_plane_all[] = {
+	{
+		.layer_nr = VO_VIDEO_PLANE_OSD1,
+		.type = DRM_PLANE_TYPE_PRIMARY,
+		.plane_order = 2,
+	},
+	{
+		.layer_nr = VO_VIDEO_PLANE_SUB1,
+		.type = DRM_PLANE_TYPE_CURSOR,
+		.plane_order = 3,
+	},
+	{
+		.layer_nr = VO_VIDEO_PLANE_V1,
+		.type = DRM_PLANE_TYPE_OVERLAY,
+		.plane_order = 1,
+	},
+	{
+		.layer_nr = VO_VIDEO_PLANE_V2,
+		.type = DRM_PLANE_TYPE_OVERLAY,
+		.plane_order = 0,
+	},
 };
+
 
 static const struct crtc_data rtd_crtc_main = {
 	.version = 0,
@@ -57,19 +80,22 @@ static const struct crtc_data rtd_crtc_main = {
 	.mixer = 0,
 };
 
-static const struct crtc_data rtd_crtc_second = {
+
+static const struct crtc_data rtd_crtc_ext = {
 	.version = 0,
-	.plane = rtd_crtc_plane_second,
-	.plane_size = ARRAY_SIZE(rtd_crtc_plane_second),
+	.plane = rtd_crtc_plane_ext,
+	.plane_size = ARRAY_SIZE(rtd_crtc_plane_ext),
 	.mixer = 1,
 };
 
-static const struct crtc_data rtd_crtc_extend = {
+
+static const struct crtc_data rtd_crtc_all = {
 	.version = 0,
-	.plane = rtd_crtc_plane_extend,
-	.plane_size = ARRAY_SIZE(rtd_crtc_plane_extend),
-	.mixer = 2,
+	.plane = rtd_crtc_plane_all,
+	.plane_size = ARRAY_SIZE(rtd_crtc_plane_all),
+	.mixer = 0,
 };
+
 
 static int rtk_crtc_set_mixer_order(struct rtk_rpc_info *rpc_info,
 				struct rpc_disp_mixer_order *mixer_order)
@@ -82,6 +108,25 @@ static int rtk_crtc_set_mixer_order(struct rtk_rpc_info *rpc_info,
 	ret = rpc_set_mixer_order(rpc_info, mixer_order);
 
 	return ret;
+}
+
+int rtk_crtc_ioctl_get_mixer_id(struct drm_device *dev, void *data, struct drm_file *file)
+{
+	struct drm_rtk_mixer_id *rtk_mixer_id = (struct drm_rtk_mixer_id *) data;
+	struct rtk_drm_crtc *rtk_crtc;
+	struct drm_crtc *crtc;
+
+	crtc = drm_crtc_find(dev, file, rtk_mixer_id->crtc_id);
+	if (!crtc)
+		return -ENOENT;
+
+	rtk_crtc = to_rtk_crtc(crtc);
+
+	DRM_DEBUG_DRIVER("crtc id [%d], mixer id : %d\n", rtk_mixer_id->crtc_id, rtk_crtc->mixer);
+
+	rtk_mixer_id->mixer_id = rtk_crtc->mixer;
+
+	return 0;
 }
 
 static struct drm_crtc_state *rtk_crtc_duplicate_state(struct drm_crtc *crtc)
@@ -152,8 +197,8 @@ static int rtk_crtc_enable_vblank(struct drm_crtc *crtc)
 
 	DRM_DEBUG_KMS("%d\n", __LINE__);
 
-	if (rtk_crtc->hwlock)
-		hwspin_lock_timeout_irqsave(rtk_crtc->hwlock, UINT_MAX, &flags);
+	if (rpc_info->hwlock)
+		hwspin_lock_timeout_irqsave(rpc_info->hwlock, UINT_MAX, &flags);
 
 	notify = DC_VO_SET_NOTIFY << (rtk_crtc->mixer * 2);
 
@@ -161,8 +206,8 @@ static int rtk_crtc_enable_vblank(struct drm_crtc *crtc)
 	val |= __cpu_to_be32(notify);
 	writel(val, rpc_info->vo_sync_flag);
 
-	if (rtk_crtc->hwlock)
-		hwspin_unlock_irqrestore(rtk_crtc->hwlock, &flags);
+	if (rpc_info->hwlock)
+		hwspin_unlock_irqrestore(rpc_info->hwlock, &flags);
 
 	return 0;
 }
@@ -177,8 +222,8 @@ static void rtk_crtc_disable_vblank(struct drm_crtc *crtc)
 
 	DRM_DEBUG_KMS("%d\n", __LINE__);
 
-	if (rtk_crtc->hwlock)
-		hwspin_lock_timeout_irqsave(rtk_crtc->hwlock, UINT_MAX, &flags);
+	if (rpc_info->hwlock)
+		hwspin_lock_timeout_irqsave(rpc_info->hwlock, UINT_MAX, &flags);
 
 	notify = DC_VO_SET_NOTIFY << (rtk_crtc->mixer * 2);
 
@@ -186,8 +231,8 @@ static void rtk_crtc_disable_vblank(struct drm_crtc *crtc)
 	val &= ~(__cpu_to_be32(notify));
 	writel(val, rpc_info->vo_sync_flag);
 
-	if (rtk_crtc->hwlock)
-		hwspin_unlock_irqrestore(rtk_crtc->hwlock, &flags);
+	if (rpc_info->hwlock)
+		hwspin_unlock_irqrestore(rpc_info->hwlock, &flags);
 }
 
 static void rtk_crtc_destroy(struct drm_crtc *crtc)
@@ -198,15 +243,40 @@ static void rtk_crtc_destroy(struct drm_crtc *crtc)
 void rtk_crtc_finish_page_flip(struct drm_crtc *crtc)
 {
 	struct rtk_drm_crtc *rtk_crtc = to_rtk_crtc(crtc);
+	struct rtk_drm_plane *rtk_plane = &rtk_crtc->nplanes[0];
 	struct drm_device *drm = crtc->dev;
 	unsigned long flags;
+	int i;
+	s64 completed_time_ms;
 
 	spin_lock_irqsave(&drm->event_lock, flags);
-	if (rtk_crtc->pending_needs_vblank) {
-		drm_crtc_send_vblank_event(crtc, rtk_crtc->event);
-		drm_crtc_vblank_put(crtc);
-		rtk_crtc->event = NULL;
-		rtk_crtc->pending_needs_vblank = false;
+	if ((rtk_plane->pending_planes || rtk_crtc->pending_needs_vblank)) {
+		if (rtk_plane_check_update_done(&rtk_crtc->nplanes[0])) {
+
+			completed_time_ms = ktime_ms_delta(ktime_get(), rtk_crtc->begin);
+			if (completed_time_ms > 33)
+				DRM_DEBUG_DRIVER("event (%p) flip time (%lld) completed_time_ms (%lld)"
+					"pending_planes = %d, pending_needs_vblank = %d\n",
+					rtk_crtc->event, ktime_get(), completed_time_ms,
+					rtk_plane->pending_planes, rtk_crtc->pending_needs_vblank);
+
+			if (rtk_crtc->event) {
+				drm_crtc_send_vblank_event(crtc, rtk_crtc->event);
+				drm_crtc_vblank_put(crtc);
+			}
+
+			rtk_crtc->event = NULL;
+			rtk_crtc->pending_needs_vblank = false;
+
+			for (i = 0; i < rtk_crtc->plane_count; i++)
+				if(rtk_crtc->nplanes[i].rtk_fence)
+					rtk_drm_fence_update(&rtk_crtc->nplanes[i]);
+
+			if (rtk_plane->pending_planes) {
+				DRM_DEBUG_DRIVER("clear pending_planes\n");
+				rtk_plane->pending_planes = false;
+			}
+		}
 	}
 	spin_unlock_irqrestore(&drm->event_lock, flags);
 }
@@ -232,15 +302,48 @@ static bool rtk_crtc_mode_fixup(struct drm_crtc *crtc,
 	return true;
 }
 
+static int rtk_crtc_atomic_check(struct drm_crtc *crtc,
+				struct drm_atomic_state *old_crtc_state)
+{
+	struct rtk_drm_crtc *rtk_crtc = to_rtk_crtc(crtc);
+	int i;
+
+	if (crtc->state->mode_changed || crtc->state->active_changed) {
+		for (i = 0; i < rtk_crtc->plane_count; i++) {
+			struct rtk_drm_plane *rtk_plane = &rtk_crtc->nplanes[i];
+
+			DRM_DEBUG_DRIVER("crtc %d mode/active changed, reconfig videoPlane %d\n",
+				crtc->index, rtk_plane->layer_nr);
+
+			rtk_plane->disp_win.videoWin.x = 0;
+			rtk_plane->disp_win.videoWin.y = 0;
+			rtk_plane->disp_win.videoWin.width = 0;
+			rtk_plane->disp_win.videoWin.height = 0;
+
+		}
+	}
+
+	return 0;
+}
+
 static void rtk_crtc_atomic_flush(struct drm_crtc *crtc,
 				struct drm_atomic_state *old_crtc_state)
 {
 	struct rtk_drm_crtc *rtk_crtc = to_rtk_crtc(crtc);
+	// struct rtk_rpc_info *rpc_info = rtk_crtc->rpc_info;
+	struct drm_device *drm = crtc->dev;
+	unsigned long flags;
 
-	DRM_DEBUG_KMS("%d\n", __LINE__);
+	DRM_DEBUG_DRIVER("%d\n", __LINE__);
 
-	if (rtk_crtc->event)
+	spin_lock_irqsave(&drm->event_lock, flags);
+	if (rtk_crtc->event) {
 		rtk_crtc->pending_needs_vblank = true;
+
+		DRM_DEBUG_DRIVER("pending crtc event\n");
+		// rpc_send_interrupt(rpc_info);
+	}
+	spin_unlock_irqrestore(&drm->event_lock, flags);
 }
 
 static void rtk_crtc_atomic_begin(struct drm_crtc *crtc,
@@ -249,8 +352,6 @@ static void rtk_crtc_atomic_begin(struct drm_crtc *crtc,
 	struct rtk_drm_crtc *rtk_crtc = to_rtk_crtc(crtc);
 	struct rtk_crtc_state *state = to_rtk_crtc_state(crtc->state);
 
-	DRM_DEBUG_KMS("%d\n", __LINE__);
-
 	if (rtk_crtc->event && state->base.event)
 		DRM_ERROR("new event while there is still a pending event\n");
 
@@ -258,6 +359,9 @@ static void rtk_crtc_atomic_begin(struct drm_crtc *crtc,
 		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
 		rtk_crtc->event = state->base.event;
 		state->base.event = NULL;
+		rtk_crtc->begin = ktime_get();
+		DRM_DEBUG_DRIVER("crtc[%d] event (%p) begin (%lld)\n",
+			crtc->index, rtk_crtc->event, rtk_crtc->begin);
 	}
 }
 
@@ -285,6 +389,7 @@ static void rtk_crtc_atomic_disable(struct drm_crtc *crtc,
 
 static const struct drm_crtc_helper_funcs rtk_crtc_helper_funcs = {
 	.mode_fixup = rtk_crtc_mode_fixup,
+	.atomic_check = rtk_crtc_atomic_check,
 	.atomic_flush = rtk_crtc_atomic_flush,
 	.atomic_begin = rtk_crtc_atomic_begin,
 	.atomic_enable = rtk_crtc_atomic_enable,
@@ -304,13 +409,13 @@ irqreturn_t rtk_crtc_isr(int irq, void *dev_id)
 	if (!DC_HAS_BIT(rpc_info->vo_sync_flag, feedback_notify))
 		return IRQ_HANDLED;
 
-	if (rtk_crtc->hwlock)
-		hwspin_lock_timeout_irqsave(rtk_crtc->hwlock, UINT_MAX, &flags);
+	if (rpc_info->hwlock)
+		hwspin_lock_timeout_irqsave(rpc_info->hwlock, UINT_MAX, &flags);
 
 	DC_RESET_BIT(rpc_info->vo_sync_flag, feedback_notify);
 
-	if (rtk_crtc->hwlock)
-		hwspin_unlock_irqrestore(rtk_crtc->hwlock, &flags);
+	if (rpc_info->hwlock)
+		hwspin_unlock_irqrestore(rpc_info->hwlock, &flags);
 
 	drm_crtc_handle_vblank(crtc);
 
@@ -321,21 +426,7 @@ irqreturn_t rtk_crtc_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void rtk_crtc_change_tv_system(struct drm_crtc *crtc)
-{
-	struct rtk_drm_crtc *rtk_crtc = to_rtk_crtc(crtc);
-	int i;
 
-	for (i = 0; i < rtk_crtc->plane_count; i++) {
-		struct rtk_drm_plane *rtk_plane = &rtk_crtc->nplanes[i];
-
-		rtk_plane->disp_win.videoWin.x = 0;
-		rtk_plane->disp_win.videoWin.y = 0;
-		rtk_plane->disp_win.videoWin.width = 0;
-		rtk_plane->disp_win.videoWin.height = 0;
-	}
-	return;
-}
 
 static int rtk_crtc_bind(struct device *dev, struct device *master, void *data)
 {
@@ -346,7 +437,6 @@ static int rtk_crtc_bind(struct device *dev, struct device *master, void *data)
 	struct rtk_drm_crtc *rtk_crtc;
 	const struct crtc_data *crtc_data;
 	struct drm_plane *primary = NULL, *cursor = NULL;
-	int lock_id;
 	int i, ret;
 
 	crtc_data = of_device_get_match_data(dev);
@@ -354,6 +444,7 @@ static int rtk_crtc_bind(struct device *dev, struct device *master, void *data)
 		return -ENODEV;
 
 	rtk_crtc = devm_kzalloc(dev, sizeof(*rtk_crtc), GFP_KERNEL);
+	rtk_crtc->dev = dev;
 
 	rtk_crtc->nplanes = devm_kcalloc(dev, crtc_data->plane_size,
 					sizeof(struct rtk_drm_plane), GFP_KERNEL);
@@ -441,21 +532,6 @@ static int rtk_crtc_bind(struct device *dev, struct device *master, void *data)
 		return -1;
 	}
 
-	rtk_crtc->change_tv_system = rtk_crtc_change_tv_system;
-
-	lock_id = of_hwspin_lock_get_id(dev->of_node, 0);
-	if (lock_id > 0 || (IS_ENABLED(CONFIG_HWSPINLOCK) && lock_id == 0)) {
-		struct hwspinlock *lock = devm_hwspin_lock_request_specific(dev, lock_id);
-
-		if (lock) {
-			dev_info(dev, "use hwlock%d\n", lock_id);
-			rtk_crtc->hwlock = lock;
-		}
-	} else {
-		if (lock_id != -ENOENT)
-			dev_err(dev, "failed to get hwlock: %pe\n", ERR_PTR(lock_id));
-	}
-
 	rtk_crtc->present_time_prop = drm_property_create_range(drm, DRM_MODE_PROP_ATOMIC,
 					"expectedPresentTime", 0, 0xffffffffffffffff);
 	drm_object_attach_property(&rtk_crtc->crtc.base, rtk_crtc->present_time_prop, 0);
@@ -497,12 +573,14 @@ static int rtk_crtc_remove(struct platform_device *pdev)
 static const struct of_device_id rtk_crtc_of_ids[] = {
 	{ .compatible = "realtek,rtd-crtc-main",
 	  .data = &rtd_crtc_main },
-	{ .compatible = "realtek,rtd-crtc-second",
-	  .data = &rtd_crtc_second },
-	{ .compatible = "realtek,rtd-crtc-extend",
-	  .data = &rtd_crtc_extend },
+	{ .compatible = "realtek,rtd-crtc-ext",
+	  .data = &rtd_crtc_ext },
+	{ .compatible = "realtek,rtd-crtc-all",
+	  .data = &rtd_crtc_all },
 	{},
 };
+
+MODULE_DEVICE_TABLE(of, rtk_crtc_of_ids);
 
 struct platform_driver rtk_crtc_platform_driver = {
 	.probe = rtk_crtc_probe,

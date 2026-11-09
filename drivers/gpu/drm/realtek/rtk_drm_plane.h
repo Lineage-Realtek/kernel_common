@@ -14,8 +14,6 @@
 #ifndef _RTK_DRM_PLANE_H_
 #define _RTK_DRM_PLANE_H_
 
-int rtk_plane_init(struct drm_device *dev, struct drm_plane *plane,
-		   unsigned long possible_crtcs, enum drm_plane_type type);
 int rtk_plane_export_refclock_fd_ioctl(struct drm_device *dev,
 		   void *data, struct drm_file *file);
 int rtk_plane_set_pause_ioctl(struct drm_device *dev,

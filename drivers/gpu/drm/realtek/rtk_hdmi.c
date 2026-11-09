@@ -1291,9 +1291,9 @@ static void hdmitx_set_video_timing(struct rtk_hdmi *hdmi,
 	u8 bpc;
 	u8 avi_buffer[HDMI_INFOFRAME_SIZE(AVI)];
 	unsigned int tmds_config;
-	struct drm_connector *connector = &hdmi->connector;
-	struct drm_crtc *crtc = connector->state->crtc;
-	struct rtk_drm_crtc *rtk_crtc = to_rtk_crtc(crtc);
+
+
+
 
 	memset_io(&cur_tvsystem, 0, sizeof(cur_tvsystem));
 	memset_io(&tvsystem, 0, sizeof(tvsystem));
@@ -1385,7 +1385,7 @@ static void hdmitx_set_video_timing(struct rtk_hdmi *hdmi,
 
 	rpc_set_tv_system(hdmi->rpc_info, &tvsystem);
 
-	rtk_crtc->change_tv_system(crtc);
+
 	if (tmds_config)
 		send_scdc_tmdsconfig(hdmi, mode, tmds_config);
 

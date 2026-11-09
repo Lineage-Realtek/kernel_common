@@ -31,6 +31,7 @@
 
 #include <linux/dma-map-ops.h>
 #include "rtk_drm_drv.h"
+#include "rtk_drm_crtc.h"
 #include "rtk_drm_fb.h"
 #include "rtk_drm_gem.h"
 #include "rtk_drm_rpc.h"
@@ -155,8 +156,7 @@ static const struct file_operations rtk_drm_driver_fops = {
 };
 
 static struct drm_ioctl_desc rtk_drm_ioctls[] = {
-	DRM_IOCTL_DEF_DRV(RTK_GET_UNLOCK_BUF, rtk_fence_get_unlock_buf_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
-	DRM_IOCTL_DEF_DRV(RTK_GET_BUF_ST, rtk_fence_get_buf_st_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(RTK_GET_MIXER_ID, rtk_crtc_ioctl_get_mixer_id, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(RTK_EXPORT_REFCLOCK_FD, rtk_plane_export_refclock_fd_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(RTK_SET_PAUSE, rtk_plane_set_pause_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(RTK_GET_PLANE_ID, rtk_plane_get_plane_id, DRM_AUTH|DRM_RENDER_ALLOW),

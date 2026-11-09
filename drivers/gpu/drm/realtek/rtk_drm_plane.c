@@ -93,6 +93,7 @@ static const struct drm_prop_enum_list vo_plane_list[] = {
 
 struct rtk_drm_plane_state {
 	struct drm_plane_state state;
+	s32 __user *out_fence_ptr;
 	unsigned int display_idx;
 	struct drm_property_blob *rtk_meta_data_blob;
 	struct drm_property_enum *vo_plane_name;
@@ -433,6 +434,7 @@ static int rtk_plane_update_video_obj(struct drm_plane *plane)
 
 		index = s->display_idx;
 		obj->context = index;
+		/* NOTE: the device assumes a fence exists even for overlay metadata. */
 		obj->pLock = rtk_fence->pLock_paddr+index;
 		obj->pReceived = rtk_fence->pReceived_paddr+index;
 		obj->PTSH = decObj->PTSH;
@@ -440,8 +442,6 @@ static int rtk_plane_update_video_obj(struct drm_plane *plane)
 		obj->RPTSH = decObj->RPTSH;
 		obj->RPTSL = decObj->RPTSL;
 
-		if(rtk_plane->rtk_fence->usePlock)
-			rtk_fence_set_buf_st(rtk_plane->rtk_fence, index, PLOCK_STATUS_QPEND);
 	}
 
 	write_cmd_to_ringbuffer(rtk_plane, obj);
@@ -452,16 +452,25 @@ static int rtk_plane_update_video_obj(struct drm_plane *plane)
 static int rtk_plane_update_graphic_obj(struct drm_plane *plane)
 {
 	struct rtk_drm_plane *rtk_plane = to_rtk_plane(plane);
+	struct rtk_rpc_info *rpc_info = rtk_plane->rpc_info;
+	struct rtk_drm_fence *rtk_fence = rtk_plane->rtk_fence;
 	struct drm_framebuffer *fb = plane->state->fb;
 	struct drm_gem_object *gem[4];
 	struct rtk_gem_object *rtk_gem[4];
 	const struct drm_format_info *info;
 	unsigned int flags = 0;
 	int i;
+	unsigned int cu_size = 0;
+	unsigned int coding_unit = 0;
 
 	struct graphic_object *obj = (struct graphic_object *)kzalloc(sizeof(struct graphic_object), GFP_KERNEL);
+	ktime_t start;
+	s64 update_time_ms;
+
+	start = ktime_get();
+
 	if(!obj) {
-		DRM_ERROR("rtk_plane_update_graphic_obj malloc graphic_object fail\n");
+		DRM_ERROR("queue_ring_buffer malloc graphic_object fail\n");
 		return -1;
 	}
 
@@ -476,58 +485,121 @@ static int rtk_plane_update_graphic_obj(struct drm_plane *plane)
 	memset(obj, 0, sizeof(struct graphic_object));
 	obj->header.type = VIDEO_GRAPHIC_INBAND_CMD_TYPE_PICTURE_OBJECT;
 	obj->header.size = sizeof(struct graphic_object);
-
 	obj->colorkey = -1;
+
 	if (fb->format->format == DRM_FORMAT_XRGB8888) {
 		flags |= eBuffer_USE_GLOBAL_ALPHA;
 		obj->alpha = 0x3ff;
 		obj->format = INBAND_CMD_GRAPHIC_FORMAT_ARGB8888_LITTLE;
 	} else if (fb->format->format == DRM_FORMAT_ABGR8888) {
 		obj->format = INBAND_CMD_GRAPHIC_FORMAT_RGBA8888;
-	} else if (fb->format->format == DRM_FORMAT_ARGB8888) {
+	} else if (fb->format->format == DRM_FORMAT_ARGB8888 ||
+		   fb->format->format == DRM_FORMAT_BGRA8888) {
 		obj->format = INBAND_CMD_GRAPHIC_FORMAT_ARGB8888_LITTLE;
 	}
 
-	if (fb->modifier & AFBC_FORMAT_MOD_YTR) {
-		flags |= eBuffer_AFBC_Enable | eBuffer_AFBC_YUV_Transform;
-	}
 
-	if (rtk_plane->buflock_idx >= 1024) {
-		rtk_plane->buflock_idx = 0;
-	}
+	DRM_DEBUG_DRIVER("fb->modifier : 0x%llx, fb->pitches[0] : %d\n", fb->modifier, fb->pitches[0]);
 
-	obj->context = rtk_plane->buflock_idx;
-
+	obj->context = rtk_fence->idx++;
 	rtk_plane->context = obj->context;
-	rtk_plane->buflock_idx++;
+
+	DRM_DEBUG_DRIVER("plane %d queue context %d\n",
+		plane->index, rtk_plane->context);
+
+	if (rtk_fence->idx >= CONTEXT_SIZE)
+		rtk_fence->idx -= CONTEXT_SIZE;
 
 	obj->width = fb->width;
 	obj->height = fb->height;
 	obj->pitch = fb->pitches[0];
 	obj->address = rtk_gem[0]->paddr;
 	obj->picLayout = INBAND_CMD_GRAPHIC_2D_MODE;
-	obj->afbc = (flags & eBuffer_AFBC_Enable)?1:0;
-//     obj->afbc_block_split = (flags & eBuffer_AFBC_Split)?1:0;
-	obj->afbc_yuv_transform = (flags & eBuffer_AFBC_YUV_Transform)?1:0;
+
+	if (fb->modifier & AFBC_FORMAT_MOD_YTR) {
+		DRM_DEBUG_DRIVER("AFBBBBBBBC\n");
+
+		flags |= eBuffer_AFBC_Enable | eBuffer_AFBC_YUV_Transform;
+
+		obj->mode = MODE_AFBC;
+		obj->ext1 = (flags & eBuffer_AFBC_Split)?1:0;
+		obj->ext2 = (flags & eBuffer_AFBC_YUV_Transform)?1:0;
+	} else if (fb->modifier & AFRC_FORMAT_MOD_LAYOUT_SCAN) {
+		DRM_DEBUG_DRIVER("AFRRRRRRRC\n");
+
+		obj->mode = MODE_AFRC;
+
+		switch (fb->modifier & AFRC_FORMAT_MOD_CU_SIZE_MASK) {
+			case AFRC_FORMAT_MOD_CU_SIZE_16:
+				coding_unit = AFRC_FORMAT_MOD_CU_SIZE_16 - 1;
+				cu_size = 16;
+				DRM_DEBUG_DRIVER("Coding Unit 16 (%d)\n", coding_unit);
+				break;
+			case AFRC_FORMAT_MOD_CU_SIZE_24:
+				coding_unit = AFRC_FORMAT_MOD_CU_SIZE_24 - 1;
+				cu_size = 24;
+				DRM_DEBUG_DRIVER("Coding Unit 24 (%d)\n", coding_unit);
+				break;
+			case AFRC_FORMAT_MOD_CU_SIZE_32:
+				coding_unit = AFRC_FORMAT_MOD_CU_SIZE_32 - 1;
+				cu_size = 32;
+				DRM_DEBUG_DRIVER("Coding Unit 32 (%d)\n", coding_unit);
+				break;
+			default:
+				cu_size = 0;
+				break;
+		}
+
+		obj->ext1 = coding_unit;
+		obj->ext2 = STRIDE_HW_PITCH; //stride_en
+		// obj->ext2 = STRIDE_USER_PITCH;
+
+		if (obj->ext2 == STRIDE_USER_PITCH) {
+			obj->pitch = ALIGN(obj->width, 64) * cu_size;
+			DRM_DEBUG_DRIVER("User pitch %d\n", obj->pitch);
+		}
+
+	} else {
+		obj->mode = MODE_LINEAR;
+		obj->ext1 = 0;
+		obj->ext2 = 0;
+	}
 
 	write_cmd_to_ringbuffer(rtk_plane, obj);
+
+	DRM_DEBUG_DRIVER("rpc_send_interrupt first\n");
+	rpc_send_interrupt(rpc_info);
+
+	rtk_plane->pending_planes = true;
+	rtk_plane->pending = ktime_get();
+
+	update_time_ms = ktime_ms_delta(ktime_get(), start);
+	if (update_time_ms > 2)
+		DRM_DEBUG_DRIVER("queue context %d update_time_ms (%lld)\n",
+			rtk_plane->context, update_time_ms);
+
 	kfree(obj);
+
 	return 0;
 }
 
 bool rtk_plane_check_update_done(struct rtk_drm_plane *rtk_plane)
 {
 	int refContext = -1;
+	s64 received_time_ms;
 	if (rtk_plane->refclock) {
 		refContext = htonl(rtk_plane->refclock->videoContext);
 		if (refContext == rtk_plane->context) {
-			// DRM_INFO("context %d update successful\n", rtk_plane->context);
+			received_time_ms = ktime_ms_delta(ktime_get(), rtk_plane->pending);
+			if (received_time_ms > 16)
+				DRM_DEBUG_DRIVER("videoplane %d's context %d update successful, received_time_ms (%lld)\n",
+					rtk_plane->layer_nr, rtk_plane->context, received_time_ms);
 			return true;
 		}
 	}
 
-	DRM_DEBUG_DRIVER("context %d update fail, continue to show %d\n",
-		rtk_plane->context, refContext);
+	DRM_DEBUG_DRIVER("videoplane %d 's context %d update fail, continue to show %d\n",
+		rtk_plane->layer_nr, rtk_plane->context, refContext);
 
 	return false;
 }
@@ -704,7 +776,7 @@ void rtk_plane_destroy(struct drm_plane *plane)
 	enum VO_VIDEO_PLANE videoplane;
 
 	if (rtk_plane->rtk_fence)
-		rtk_fence_uninit(rtk_plane);
+		rtk_drm_fence_uninit(rtk_plane);
 
 	rpc_destroy_video_agent(rpc_info, rtk_plane->info.instance);
 
@@ -789,6 +861,7 @@ static int rtk_plane_atomic_set_property(struct drm_plane *plane,
 		struct drm_property_blob *meta_data =
 			drm_property_lookup_blob(rtk_plane->plane.dev, val);
 
+		/* NOTE: the device dereferences an invalid blob lookup without checking NULL. */
 		if (meta_data->length > sizeof(struct video_object)) {
 			DRM_ERROR("Meta data structure size not match\n");
 			meta_data->length = sizeof(struct video_object);
@@ -802,6 +875,29 @@ static int rtk_plane_atomic_set_property(struct drm_plane *plane,
 
 	if (property == rtk_plane->vo_plane_name_prop)
 		return 0;
+
+	if (property == rtk_plane->out_fence_ptr) {
+		s32 __user *fence_ptr = u64_to_user_ptr(val);
+
+		if (!fence_ptr) {
+			DRM_ERROR("No plane out-fence-ptr\n");
+			return 0;
+		}
+
+		s->out_fence_ptr = fence_ptr;
+
+		DRM_DEBUG_DRIVER("videoplane %d 's fence (%p) has out-fence-ptr (%p)\n",
+			rtk_plane->layer_nr, rtk_plane->rtk_fence, s->out_fence_ptr);
+
+		if (rtk_plane->rtk_fence && s->out_fence_ptr) {
+			/* NOTE: device fence-creation errors are not returned to the caller. */
+			if (!rtk_drm_fence_create(rtk_plane->rtk_fence, s->out_fence_ptr)) {
+				s->out_fence_ptr = NULL;
+			}
+		}
+
+		return 0;
+	}
 
 	DRM_ERROR("failed to set rtk plane atomic property\n");
 	return -EINVAL;
@@ -829,6 +925,11 @@ static int rtk_plane_atomic_get_property(struct drm_plane *plane,
 
 	if (property == rtk_plane->vo_plane_name_prop) {
 		*val = rtk_plane->layer_nr;
+		return 0;
+	}
+
+	if (property == rtk_plane->out_fence_ptr) {
+		*val = 0;
 		return 0;
 	}
 
@@ -874,11 +975,11 @@ static void rtk_plane_atomic_update(struct drm_plane *plane,
 	struct drm_crtc *crtc = plane->state->crtc;
 	struct drm_framebuffer *fb = plane->state->fb;
 
-	DRM_DEBUG_KMS("%s, width=%d, height=%d\n", __func__,
-			fb->width, fb->height);
-
 	if (!crtc || WARN_ON(!fb))
 		return;
+
+	DRM_DEBUG_DRIVER("crtc[%d], fb->width=%d, fb->height=%d\n",
+		crtc->index, fb->width, fb->height);
 
 	if (plane->type == DRM_PLANE_TYPE_OVERLAY)
 		rtk_plane_update_video_obj(plane);
@@ -912,10 +1013,58 @@ static void rtk_plane_atomic_disable(struct drm_plane *plane,
 		DRM_ERROR("rpc_video_config_disp_win RPC fail\n");
 }
 
+#define MIN_UPDATE_INTERVAL 20
+
+static int rtk_plane_atomic_async_check(struct drm_plane *plane,
+           struct drm_atomic_state *state)
+{
+	if (plane->state->fb->width < 257 && plane->state->fb->height < 257)
+		return 0;
+	return -EINVAL;
+}
+
+static void rtk_plane_atomic_async_update(struct drm_plane *plane,
+            struct drm_atomic_state *state)
+{
+	struct rtk_drm_plane *rtk_plane = to_rtk_plane(plane);
+	struct drm_plane_state *new_plane_state;
+
+	new_plane_state = drm_atomic_get_new_plane_state(state, plane);
+
+	plane->state->crtc_x = new_plane_state->crtc_x;
+	plane->state->crtc_y = new_plane_state->crtc_y;
+	plane->state->crtc_h = new_plane_state->crtc_h;
+	plane->state->crtc_w = new_plane_state->crtc_w;
+	plane->state->src_x  = new_plane_state->src_x;
+	plane->state->src_y  = new_plane_state->src_y;
+	plane->state->src_h  = new_plane_state->src_h;
+	plane->state->src_w  = new_plane_state->src_w;
+
+	swap(plane->state->fb, new_plane_state->fb);
+
+	if (ktime_before(ktime_get(),
+		ktime_add_ms(rtk_plane->update_time, MIN_UPDATE_INTERVAL)))
+		return;
+
+	rtk_plane->update_time = ktime_get();
+
+	if (plane->type == DRM_PLANE_TYPE_OVERLAY)
+		rtk_plane_update_video_obj(plane);
+	else
+		rtk_plane_update_graphic_obj(plane);
+
+	if (rtk_plane_update_scaling(plane)) {
+		DRM_ERROR("rtk_plane_update_scaling fail\n");
+		return;
+	}
+}
+
 static const struct drm_plane_helper_funcs rtk_plane_helper_funcs = {
 	.atomic_check = rtk_plane_atomic_check,
 	.atomic_update = rtk_plane_atomic_update,
 	.atomic_disable = rtk_plane_atomic_disable,
+	.atomic_async_check = rtk_plane_atomic_async_check,
+	.atomic_async_update = rtk_plane_atomic_async_update,
 };
 
 int rtk_plane_init(struct drm_device *drm, struct rtk_drm_plane *rtk_plane,
@@ -968,6 +1117,15 @@ int rtk_plane_init(struct drm_device *drm, struct rtk_drm_plane *rtk_plane,
 	}
 	else if (type == DRM_PLANE_TYPE_PRIMARY) {
 		drm_plane_create_zpos_immutable_property(plane, 1);
+
+		rtk_plane->out_fence_ptr = drm_property_create_range(plane->dev, DRM_MODE_PROP_ATOMIC,
+					"OUT_FENCE_PTR", 0, U64_MAX);
+		if (!rtk_plane->out_fence_ptr) {
+			DRM_ERROR("create plane out fence ptr property fail\n");
+			return -ENOMEM;
+		}
+
+		drm_object_attach_property(&plane->base, rtk_plane->out_fence_ptr, 0);
 	}
 	else {
 		drm_plane_create_zpos_immutable_property(plane, 2);
@@ -994,8 +1152,8 @@ int rtk_plane_init(struct drm_device *drm, struct rtk_drm_plane *rtk_plane,
 	rtk_plane->flags |= VSYNC_FORCE_LOCK;
 
 	rtk_plane_rpc_init(rtk_plane, layer_nr);
-	if (type == DRM_PLANE_TYPE_OVERLAY)
-		rtk_fence_init(rtk_plane);
+	if (type == DRM_PLANE_TYPE_PRIMARY)
+		rtk_drm_fence_init(rtk_plane);
 
 	return 0;
 }
